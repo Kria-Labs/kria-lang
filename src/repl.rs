@@ -96,13 +96,26 @@ Commands:
     );
 }
 
-/// Delimiter depth outside of double-quoted strings.
+/// Delimiter depth outside of strings and comments.
 fn open_delimiter_depth(source: &str) -> i32 {
     let mut depth = 0i32;
     let mut in_string = false;
+    let mut in_triple_string = false;
     let mut escape = false;
+    let mut chars = source.chars().peekable();
 
-    for ch in source.chars() {
+    while let Some(ch) = chars.next() {
+        if in_triple_string {
+            if ch == '"' && chars.peek() == Some(&'"') {
+                chars.next();
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    in_triple_string = false;
+                }
+            }
+            continue;
+        }
+
         if in_string {
             if escape {
                 escape = false;
@@ -117,8 +130,40 @@ fn open_delimiter_depth(source: &str) -> i32 {
             }
             continue;
         }
+
+        if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                if c == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    break;
+                }
+            }
+            continue;
+        }
+
         match ch {
-            '"' => in_string = true,
+            '"' => {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        in_triple_string = true;
+                    }
+                } else {
+                    in_string = true;
+                }
+            }
             '{' | '(' | '[' => depth += 1,
             '}' | ')' | ']' => depth -= 1,
             _ => {}
@@ -194,6 +239,8 @@ mod tests {
     #[test]
     fn delimiter_depth_ignores_strings() {
         assert_eq!(open_delimiter_depth(r#"{ "}" "#), 1);
+        assert_eq!(open_delimiter_depth("print(\"\"\"a\nb\"\"\")"), 0);
+        assert_eq!(open_delimiter_depth("/* { */ set x = 1"), 0);
         assert_eq!(open_delimiter_depth("fn f() {\n  return 1\n}"), 0);
     }
 

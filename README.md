@@ -46,7 +46,7 @@ cargo build --release
 
 ### Core
 
-- Dynamic typing · `set` bindings · `print()` · `type()` · `wait(ms)` · `//` comments · newline-terminated statements
+- Dynamic typing · `set` bindings · `print()` · `type()` · `wait(ms)` · `//` and `/* */` comments · `"..."` / `"""..."""` strings · newline-terminated statements
 - Operators: arithmetic, comparisons, `and` / `or` / `not`
 - Control flow: `if` / `elseif` / `else`, `while`, `break`, `continue`
 - Functions: `fn name(...)`, lambdas `fn(...) { }`, `return`, closures (copy-on-create captures)
@@ -88,6 +88,7 @@ Runnable samples live under [`examples/`](examples/):
 | `12_objects.krx` | Objects |
 | `13_imports/main.krx` | Multi-file imports |
 | `14_type_wait.krx` | `type()`, `wait()` |
+| `15_comments_strings.krx` | Block comments, multiline strings |
 
 ---
 
@@ -110,7 +111,7 @@ cargo build --release
 ./benchmarks/benchmarks.sh
 ```
 
-Results are written to [`benchmarks/benchmark_results.txt`](benchmarks/benchmark_results.txt). Optional: [hyperfine](https://github.com/sharkdp/hyperfine) for stabler timings. Override runs with `BENCH_WARMUP=3 BENCH_RUNS=10`.
+Results are written to [`benchmarks/benchmark_results.txt`](benchmarks/benchmark_results.txt). Override warmup and runs with `BENCH_WARMUP=3 BENCH_RUNS=10`.
 
 ---
 

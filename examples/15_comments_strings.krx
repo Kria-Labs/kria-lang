@@ -1,0 +1,20 @@
+// Single-line comment
+set x = 10 /* inline block comment */ + 5
+print(x)
+
+/*
+  Multi-line block comment
+  ignored completely
+*/
+print("visible")
+
+print("""a
+hello
+world""")
+
+print("""Line one
+Line two
+Line three""")
+
+/* Comment with // inside still works */
+print("done")

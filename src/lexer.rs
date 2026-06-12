@@ -103,37 +103,83 @@ impl<'a> Lexer<'a> {
         }
     }
     
+    fn push_escape_char(&mut self, result: &mut String) {
+        self.advance();
+        if let Some(escaped) = self.current_char() {
+            match escaped {
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                _ => {
+                    result.push('\\');
+                    result.push(escaped);
+                }
+            }
+            self.advance();
+        }
+    }
+
     fn read_string(&mut self) -> String {
         self.advance(); // Skip opening quote
         let mut result = String::new();
-        
+
         while let Some(ch) = self.current_char() {
             if ch == '"' {
                 self.advance();
                 break;
             } else if ch == '\\' {
-                self.advance();
-                if let Some(escaped) = self.current_char() {
-                    match escaped {
-                        'n' => result.push('\n'),
-                        't' => result.push('\t'),
-                        'r' => result.push('\r'),
-                        '"' => result.push('"'),
-                        '\\' => result.push('\\'),
-                        _ => {
-                            result.push('\\');
-                            result.push(escaped);
-                        }
-                    }
-                    self.advance();
-                }
+                self.push_escape_char(&mut result);
             } else {
                 result.push(ch);
                 self.advance();
             }
         }
-        
+
         result
+    }
+
+    fn read_triple_string(&mut self) -> String {
+        let mut result = String::new();
+
+        while self.current_char().is_some() {
+            if self.current_char() == Some('"') && self.peek_char() == Some('"') {
+                self.advance();
+                self.advance();
+                if self.current_char() == Some('"') {
+                    self.advance();
+                    break;
+                }
+                result.push('"');
+                result.push('"');
+                continue;
+            }
+
+            if self.current_char() == Some('\\') {
+                self.push_escape_char(&mut result);
+                continue;
+            }
+
+            let ch = self.current_char().unwrap();
+            self.advance();
+            result.push(ch);
+        }
+
+        result
+    }
+
+    fn skip_block_comment(&mut self) {
+        self.advance(); // /
+        self.advance(); // *
+        while let Some(ch) = self.current_char() {
+            if ch == '*' && self.peek_char() == Some('/') {
+                self.advance();
+                self.advance();
+                break;
+            }
+            self.advance();
+        }
     }
     
     fn read_number(&mut self) -> i64 {
@@ -196,6 +242,9 @@ impl<'a> Lexer<'a> {
                                     }
                                     self.advance();
                                 }
+                                continue;
+                            } else if self.peek_char() == Some('*') {
+                                self.skip_block_comment();
                                 continue;
                             } else {
                                 self.advance();
@@ -287,7 +336,20 @@ impl<'a> Lexer<'a> {
                             self.advance();
                             return Token::Newline;
                         }
-                        '"' => return Token::String(self.read_string()),
+                        '"' => {
+                            if self.peek_char() == Some('"') {
+                                self.advance();
+                                if self.current_char() == Some('"') {
+                                    self.advance();
+                                    if self.current_char() == Some('"') {
+                                        self.advance();
+                                        return Token::String(self.read_triple_string());
+                                    }
+                                    return Token::String(String::new());
+                                }
+                            }
+                            return Token::String(self.read_string());
+                        }
                         _ if ch.is_ascii_digit() => return Token::Number(self.read_number()),
                         _ if ch.is_alphabetic() || ch == '_' => {
                             let ident = self.read_identifier();
@@ -339,5 +401,40 @@ impl<'a> Lexer<'a> {
         }
         
         tokens
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_comment_is_skipped() {
+        let mut lexer = Lexer::new("set x = 1 /* hidden */ + 2");
+        let tokens = lexer.tokenize();
+        assert!(tokens.iter().any(|t| matches!(t, Token::Number(2))));
+        assert!(!format!("{:?}", tokens).contains("hidden"));
+    }
+
+    fn first_string_token(tokens: &[Token]) -> &str {
+        match tokens.iter().find(|t| matches!(t, Token::String(_))) {
+            Some(Token::String(s)) => s,
+            _ => panic!("no string token in {:?}", tokens),
+        }
+    }
+
+    #[test]
+    fn triple_quoted_string_preserves_newlines() {
+        let mut lexer = Lexer::new(r#"print("""a\nhello""")"#);
+        let tokens = lexer.tokenize();
+        assert_eq!(first_string_token(&tokens), "a\nhello");
+    }
+
+    #[test]
+    fn multiline_triple_string_literal() {
+        let source = "print(\"\"\"a\nhello\nworld\"\"\")";
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize();
+        assert_eq!(first_string_token(&tokens), "a\nhello\nworld");
     }
 }

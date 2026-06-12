@@ -1,6 +1,6 @@
 #!/bin/bash
 # Kria Language Benchmark Suite
-# Multi-run timing with warmup; optional hyperfine backend.
+# Multi-run timing with warmup (bash + /usr/bin/time).
 
 set -uo pipefail
 
@@ -20,11 +20,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
-
-USE_HYPERFINE=0
-if command -v hyperfine >/dev/null 2>&1; then
-    USE_HYPERFINE=1
-fi
 
 if ! command -v bc >/dev/null 2>&1; then
     echo -e "${YELLOW}Warning: bc not found; floating-point stats may be limited.${NC}" >&2
@@ -85,7 +80,7 @@ compute_stats() {
     }'
 }
 
-run_benchmark_bash() {
+run_benchmark() {
     local bench_file=$1
     local w r
     for ((w = 0; w < WARMUP; w++)); do
@@ -98,33 +93,6 @@ run_benchmark_bash() {
         samples+=("$ms")
     done
     compute_stats samples
-}
-
-run_benchmark_hyperfine() {
-    local bench_file=$1
-    if ! command -v python3 >/dev/null 2>&1; then
-        return 1
-    fi
-    local json
-    json=$(mktemp)
-    hyperfine \
-        --warmup "$WARMUP" \
-        --runs "$RUNS" \
-        --time-unit millisecond \
-        --export-json "$json" \
-        --command-name "$(basename "$bench_file" .krx)" \
-        "$KRIA_BINARY $bench_file" \
-        >/dev/null 2>&1
-    python3 - "$json" <<'PY'
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-r = data["results"][0]
-print(f"median={r['median']:.2f} min={r['min']:.2f} max={r['max']:.2f} mean={r['mean']:.2f}")
-PY
-    local status=$?
-    rm -f "$json"
-    return $status
 }
 
 write_header() {
@@ -144,11 +112,7 @@ write_header() {
         fi
         echo "warmup: $WARMUP"
         echo "runs: $RUNS"
-        if [ "$USE_HYPERFINE" -eq 1 ]; then
-            echo "timing_backend: hyperfine ($(hyperfine --version 2>/dev/null | head -1))"
-        else
-            echo "timing_backend: bash (/usr/bin/time)"
-        fi
+        echo "timing_backend: bash (/usr/bin/time)"
         echo ""
         echo "Format: name | median=..ms min=.. max=.. mean=.. | exit=.. | output=.."
         echo ""
@@ -161,12 +125,7 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}    Kria Language Benchmark Suite${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
-
-if [ "$USE_HYPERFINE" -eq 1 ]; then
-    echo -e "Timing: ${GREEN}hyperfine${NC} (warmup=$WARMUP, runs=$RUNS)"
-else
-    echo -e "Timing: ${YELLOW}bash${NC} (warmup=$WARMUP, runs=$RUNS) — install hyperfine for tighter stats"
-fi
+echo -e "Timing: ${GREEN}bash${NC} (warmup=$WARMUP, runs=$RUNS)"
 echo ""
 
 write_header
@@ -196,11 +155,7 @@ while IFS= read -r bench_file; do
         continue
     fi
 
-    if [ "$USE_HYPERFINE" -eq 1 ]; then
-        stats=$(run_benchmark_hyperfine "$bench_file" 2>/dev/null) || stats=$(run_benchmark_bash "$bench_file")
-    else
-        stats=$(run_benchmark_bash "$bench_file")
-    fi
+    stats=$(run_benchmark "$bench_file")
 
     BENCH_STATS+=("$stats")
     BENCH_OUTPUTS+=("$output")
