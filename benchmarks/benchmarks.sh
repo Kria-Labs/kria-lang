@@ -65,8 +65,8 @@ compute_stats() {
     fi
     local sorted
     sorted=$(printf '%s\n' "${_vals[@]}" | sort -n)
-    awk -v data="$sorted" '
-    {
+    LC_NUMERIC=C awk -v data="$sorted" '
+    BEGIN {
         split(data, a, "\n")
         n = 0
         for (i in a) if (a[i] != "") { n++; v[n] = a[i] + 0 }
@@ -77,7 +77,7 @@ compute_stats() {
         if (n % 2 == 1) median = v[(n + 1) / 2]
         else median = (v[n / 2] + v[n / 2 + 1]) / 2
         printf "median=%.2f min=%.2f max=%.2f mean=%.2f", median, v[1], v[n], mean
-    }'
+    }' </dev/null
 }
 
 run_benchmark() {
@@ -112,7 +112,7 @@ write_header() {
         fi
         echo "warmup: $WARMUP"
         echo "runs: $RUNS"
-        echo "timing_backend: bash (/usr/bin/time)"
+        echo "timing_backend: /usr/bin/time"
         echo ""
         echo "Format: name | median=..ms min=.. max=.. mean=.. | exit=.. | output=.."
         echo ""
@@ -125,7 +125,7 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}    Kria Language Benchmark Suite${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
-echo -e "Timing: ${GREEN}bash${NC} (warmup=$WARMUP, runs=$RUNS)"
+echo -e "Timing: ${GREEN}/usr/bin/time${NC} (warmup=$WARMUP, runs=$RUNS)"
 echo ""
 
 write_header

@@ -23,14 +23,6 @@ fn peephole(bytecode: &mut Bytecode) {
                 }
             }
         }
-        // JUMP target where target == next instruction
-        if op == OP_JUMP && i + 5 <= bytecode.code.len() {
-            let target = Bytecode::read_u32(&bytecode.code, i + 1) as usize;
-            if target == i + 5 {
-                bytecode.code.drain(i..i + 5);
-                continue;
-            }
-        }
         i += 1;
     }
 }

@@ -403,17 +403,18 @@ impl Compiler {
         if pairs.is_empty() {
             return Ok(());
         }
-        self.member_hoist = hoist_global_names(&pairs);
-        for (obj, member) in pairs {
+        let hoist_map = hoist_global_names(&pairs);
+        for (obj, member) in &pairs {
             self.compile_expression(&Expression::MemberAccess {
                 object: Box::new(Expression::Identifier(obj.clone())),
                 member: member.clone(),
             })?;
-            let temp = self.member_hoist.get(&(obj, member)).unwrap().clone();
+            let temp = hoist_map.get(&(obj.clone(), member.clone())).unwrap().clone();
             let idx = self.resolve_global(&temp);
             self.emit_opcode(OP_STORE_GLOBAL);
             self.emit_u32(idx as u32);
         }
+        self.member_hoist = hoist_map;
         Ok(())
     }
 
@@ -1200,6 +1201,38 @@ mod tests {
         let bc = optimize(compiler.finish_bytecode());
         let mut vm = VM::new();
         vm.execute(&bc).expect("run parenthesized type()");
+    }
+
+    #[test]
+    fn if_in_function_with_optimize() {
+        use crate::optimizer::optimize;
+        use crate::vm::VM;
+
+        let src = "fn test(n) {\n    if (true) {\n        return n\n    }\n    return 0\n}\nprint(test(5))";
+        let tokens = Lexer::new(src).tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&stmts).expect("compile");
+        let bc = optimize(compiler.finish_bytecode());
+        let mut vm = VM::new();
+        vm.execute(&bc).expect("run if in function");
+    }
+
+    #[test]
+    fn member_hoist_in_loop() {
+        use crate::optimizer::optimize;
+        use crate::vm::VM;
+
+        let src = "set arr = [1, 2, 3]\nset sum = 0\nset i = 0\nwhile (i < 2) {\n    set sum = sum + arr.length\n    set i = i + 1\n}\nprint(sum)";
+        let tokens = Lexer::new(src).tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&stmts).expect("compile");
+        let bc = optimize(compiler.finish_bytecode());
+        let mut vm = VM::new();
+        vm.execute(&bc).expect("run member hoist");
     }
 
     #[test]
