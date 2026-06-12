@@ -1,6 +1,6 @@
 print("=== Object Literals ===")
 
-set user = { name: "Arda", age: 17 }
+set user = { name: "Michael", age: 27 }
 print(user)
 print(user.name)
 print(user.age)
