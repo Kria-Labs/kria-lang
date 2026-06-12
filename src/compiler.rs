@@ -831,34 +831,8 @@ impl Compiler {
                 }
             }
             Expression::FunctionCall { name, args } => {
-                match name.as_str() {
-                    "push" => {
-                        if args.len() != 2 {
-                            return Err("push() expects 2 arguments".to_string());
-                        }
-                        self.compile_expression(&args[0])?;
-                        self.compile_expression(&args[1])?;
-                        self.emit_opcode(OP_ARRAY_PUSH);
-                        self.emit_opcode(OP_NULL);
-                        return Ok(());
-                    }
-                    "pop" => {
-                        if args.len() != 1 {
-                            return Err("pop() expects 1 argument".to_string());
-                        }
-                        self.compile_expression(&args[0])?;
-                        self.emit_opcode(OP_ARRAY_POP);
-                        return Ok(());
-                    }
-                    "rmv" => {
-                        if args.len() != 1 {
-                            return Err("rmv() expects 1 argument".to_string());
-                        }
-                        self.compile_path_delete(&args[0])?;
-                        self.emit_opcode(OP_NULL);
-                        return Ok(());
-                    }
-                    _ => {}
+                if self.try_compile_builtin_call(name, args)? {
+                    return Ok(());
                 }
 
                 for arg in args {
@@ -913,6 +887,12 @@ impl Compiler {
                 }
             }
             Expression::Call { callee, args } => {
+                if let Expression::Identifier(name) = callee.as_ref() {
+                    if self.try_compile_builtin_call(name, args)? {
+                        return Ok(());
+                    }
+                }
+
                 for arg in args {
                     self.compile_expression(arg)?;
                 }
@@ -926,6 +906,56 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Core builtins (`push`, `pop`, `rmv`, `type`, `wait`). Returns true if handled.
+    fn try_compile_builtin_call(
+        &mut self,
+        name: &str,
+        args: &[Expression],
+    ) -> Result<bool, String> {
+        match name {
+            "push" => {
+                if args.len() != 2 {
+                    return Err("push() expects 2 arguments".to_string());
+                }
+                self.compile_expression(&args[0])?;
+                self.compile_expression(&args[1])?;
+                self.emit_opcode(OP_ARRAY_PUSH);
+                self.emit_opcode(OP_NULL);
+            }
+            "pop" => {
+                if args.len() != 1 {
+                    return Err("pop() expects 1 argument".to_string());
+                }
+                self.compile_expression(&args[0])?;
+                self.emit_opcode(OP_ARRAY_POP);
+            }
+            "rmv" => {
+                if args.len() != 1 {
+                    return Err("rmv() expects 1 argument".to_string());
+                }
+                self.compile_path_delete(&args[0])?;
+                self.emit_opcode(OP_NULL);
+            }
+            "type" => {
+                if args.len() != 1 {
+                    return Err("type() expects 1 argument".to_string());
+                }
+                self.compile_expression(&args[0])?;
+                self.emit_opcode(OP_TYPE);
+            }
+            "wait" => {
+                if args.len() != 1 {
+                    return Err("wait() expects 1 argument".to_string());
+                }
+                self.compile_expression(&args[0])?;
+                self.emit_opcode(OP_WAIT);
+                self.emit_opcode(OP_NULL);
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 
     fn register_upvalue(&mut self, name: &str, kind: u8, index: u32) {
@@ -1119,4 +1149,71 @@ impl Compiler {
 enum PathSegment {
     Dot(String),
     Bracket(Box<Expression>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    #[test]
+    fn type_builtin_emits_opcode() {
+        let tokens = Lexer::new("print(type(42))").tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&stmts).expect("compile");
+        let bc = compiler.finish_bytecode();
+        assert!(
+            bc.code.contains(&OP_TYPE),
+            "expected OP_TYPE in {:?}",
+            bc.code
+        );
+    }
+
+    #[test]
+    fn type_builtin_runs() {
+        use crate::optimizer::optimize;
+        use crate::vm::VM;
+
+        let tokens = Lexer::new("print(type(42))").tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&stmts).expect("compile");
+        let bc = optimize(compiler.finish_bytecode());
+        let mut vm = VM::new();
+        vm.execute(&bc).expect("run type()");
+    }
+
+    #[test]
+    fn type_builtin_via_call_expression() {
+        use crate::optimizer::optimize;
+        use crate::vm::VM;
+
+        let tokens = Lexer::new("print((type)(42))").tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&stmts).expect("compile");
+        let bc = optimize(compiler.finish_bytecode());
+        let mut vm = VM::new();
+        vm.execute(&bc).expect("run parenthesized type()");
+    }
+
+    #[test]
+    fn wait_builtin_runs() {
+        use crate::optimizer::optimize;
+        use crate::vm::VM;
+
+        let tokens = Lexer::new("wait(0)").tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&stmts).expect("compile");
+        let bc = optimize(compiler.finish_bytecode());
+        let mut vm = VM::new();
+        vm.execute(&bc).expect("run wait()");
+    }
 }

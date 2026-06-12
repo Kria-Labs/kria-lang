@@ -1114,6 +1114,35 @@ impl VM {
                     
                     self.stack.push(value);
                 }
+                OP_TYPE => {
+                    let val = self.pop()?;
+                    let type_name = match &val {
+                        Value::Number(_) => "number",
+                        Value::String(_) => "string",
+                        Value::Boolean(_) => "boolean",
+                        Value::Null => "null",
+                        Value::Function { .. } => "function",
+                        Value::Array(_) => "array",
+                        Value::Object(_) => "object",
+                    };
+                    self.stack.push(Value::String(Arc::from(type_name)));
+                }
+                OP_WAIT => {
+                    let val = self.pop()?;
+                    let ms = match val {
+                        Value::Number(n) => {
+                            if n < 0 {
+                                return Err(
+                                    "wait() requires a non-negative number of milliseconds"
+                                        .to_string(),
+                                );
+                            }
+                            n as u64
+                        }
+                        _ => return Err("wait() requires a number (milliseconds)".to_string()),
+                    };
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
                 _ => return Err(format!("Unknown opcode: {}", opcode)),
             }
         }

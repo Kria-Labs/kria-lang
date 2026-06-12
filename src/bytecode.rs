@@ -54,6 +54,8 @@ pub const OP_MEMBER_LENGTH: u8 = 49;
 pub const OP_FOR_IN_ARRAY_HEADER: u8 = 50; // arr_g, i_g, exit; pushes item or jumps
 pub const OP_FOR_IN_ARRAY_NEXT: u8 = 51;  // i_g, loop_start
 pub const OP_LOOP_STEP_LESS: u8 = 52;      // idx, limit, step — fused counter loop
+pub const OP_TYPE: u8 = 53;                // Pop value, push type name string
+pub const OP_WAIT: u8 = 54;                // Pop ms (number), sleep
 
 pub const CAPTURE_LOCAL: u8 = 0;
 pub const CAPTURE_UPVALUE: u8 = 1;

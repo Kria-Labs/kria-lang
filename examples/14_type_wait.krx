@@ -1,0 +1,31 @@
+print("=== type() ===")
+
+print(type(42))
+print(type("hello"))
+print(type(true))
+print(type(null))
+print(type([1, 2, 3]))
+print(type(#[1, 2]))
+print(type({ x: 1 }))
+print(type(fn(x) { return x }))
+
+set values = [10, "text", false, null, [1], { a: 1 }]
+for item in values {
+    print(type(item))
+}
+
+print("=== wait() ===")
+
+print("Starting 500ms pause...")
+wait(500)
+print("Done (about half a second later)")
+
+print("Three short ticks:")
+set i = 0
+while (i < 3) {
+    print(i)
+    wait(200)
+    set i = i + 1
+}
+
+print("=== Done ===")

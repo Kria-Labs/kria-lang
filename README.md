@@ -46,7 +46,7 @@ cargo build --release
 
 ### Core
 
-- Dynamic typing · `set` bindings · `print()` · `//` comments · newline-terminated statements
+- Dynamic typing · `set` bindings · `print()` · `type()` · `wait(ms)` · `//` comments · newline-terminated statements
 - Operators: arithmetic, comparisons, `and` / `or` / `not`
 - Control flow: `if` / `elseif` / `else`, `while`, `break`, `continue`
 - Functions: `fn name(...)`, lambdas `fn(...) { }`, `return`, closures (copy-on-create captures)
@@ -87,6 +87,7 @@ Runnable samples live under [`examples/`](examples/):
 | `11_arrays.krx` | Arrays |
 | `12_objects.krx` | Objects |
 | `13_imports/main.krx` | Multi-file imports |
+| `14_type_wait.krx` | `type()`, `wait()` |
 
 ---
 
