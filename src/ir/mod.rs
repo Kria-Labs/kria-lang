@@ -21,15 +21,14 @@ pub use opt::run_ir_passes;
 pub use recorder::IrRecorder;
 pub use types::IrModule;
 
-/// Compile source to IR via AST lowering.
+/// Compile source to IR via bytecode lift (AST → bytecode → IR).
 pub fn compile_to_ir(source: &str) -> Result<IrModule, String> {
     let tokens = Lexer::new(source).tokenize();
     let mut parser = Parser::new(tokens);
     let stmts = parser.parse()?;
     let mut compiler = crate::compiler::Compiler::new();
     compiler.compile_module(&stmts)?;
-    let bc = compiler.bytecode();
-    let mut ir = lift_bytecode(bc);
+    let mut ir = lift_bytecode(compiler.bytecode());
     run_ir_passes(&mut ir);
     Ok(ir)
 }

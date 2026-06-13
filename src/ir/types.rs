@@ -48,6 +48,8 @@ pub struct IrFunction {
     pub entry: BlockId,
     pub captures: Vec<CaptureDesc>,
     pub num_locals: u32,
+    /// Bytecode offset where this function body begins (lift metadata).
+    pub lift_start: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ impl IrModule {
             entry: BlockId(0),
             captures: Vec::new(),
             num_locals: 0,
+            lift_start: 0,
         };
         IrModule {
             globals: Vec::new(),
@@ -154,6 +157,7 @@ impl IrFunction {
             entry: BlockId(0),
             captures: Vec::new(),
             num_locals: 0,
+            lift_start: 0,
         }
     }
 

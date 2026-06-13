@@ -1,4 +1,5 @@
-//! AST → IR lowering (delegates to compiler IR recorder during compilation).
+//! AST → IR lowering is performed via bytecode lift (`lift_bytecode`).
+//! Direct AST lowering may be added here in the future.
 use super::types::IrModule;
 
 pub struct AstLowerer;
@@ -8,6 +9,6 @@ impl AstLowerer {
         _module: &mut IrModule,
         _statements: &[crate::ast::Statement],
     ) -> Result<std::collections::HashMap<String, usize>, String> {
-        Err("Use Compiler IR recorder pipeline".to_string())
+        Err("Use compile_to_ir() or Compiler::finish_bytecode() pipeline".to_string())
     }
 }

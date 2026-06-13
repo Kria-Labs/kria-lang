@@ -47,6 +47,8 @@ pub struct IrBlock {
     pub preds: Vec<BlockId>,
     pub phis: Vec<IrPhi>,
     pub insts: Vec<IrInst>,
+    /// Source bytecode IP per instruction (lift metadata for jump fixup).
+    pub inst_ips: Vec<u32>,
     pub term: Option<IrTerminator>,
     pub sealed: bool,
 }
@@ -58,9 +60,15 @@ impl IrBlock {
             preds: Vec::new(),
             phis: Vec::new(),
             insts: Vec::new(),
+            inst_ips: Vec::new(),
             term: None,
             sealed: false,
         }
+    }
+
+    pub fn push_inst(&mut self, ip: u32, inst: IrInst) {
+        self.inst_ips.push(ip);
+        self.insts.push(inst);
     }
 }
 
@@ -238,6 +246,34 @@ pub enum IrInst {
         result: ValueId,
         slot: u32,
     },
+    /// Unconditional branch (bytecode IP label).
+    Jump {
+        target_ip: u32,
+    },
+    /// Pop boolean; branch when false (bytecode IP label).
+    JumpIfFalse {
+        target_ip: u32,
+    },
+    Return {
+        value: Option<ValueId>,
+    },
+    /// Fused while (i < limit) test + back-edge.
+    LessConstJumpIfFalse {
+        global_idx: u32,
+        limit: i64,
+        target_ip: u32,
+    },
+    /// for item in array: load next item or exit.
+    ForInArrayHeader {
+        arr_slot: u32,
+        i_slot: u32,
+        exit_ip: u32,
+    },
+    /// for item in array: increment index and loop.
+    ForInArrayNext {
+        i_slot: u32,
+        loop_start_ip: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +328,7 @@ impl IrInst {
             | IrInst::MemberLength { result, .. }
             | IrInst::Type { result, .. }
             | IrInst::LoadPathCur { result, .. } => Some(*result),
+            IrInst::Return { value } => *value,
             _ => None,
         }
     }
@@ -312,6 +349,74 @@ impl IrInst {
                 | IrInst::ObjectDelete { .. }
                 | IrInst::Wait { .. }
                 | IrInst::StorePathCur { .. }
+                | IrInst::Return { .. }
+                | IrInst::Jump { .. }
+                | IrInst::JumpIfFalse { .. }
+                | IrInst::LessConstJumpIfFalse { .. }
+                | IrInst::ForInArrayHeader { .. }
+                | IrInst::ForInArrayNext { .. }
         )
+    }
+
+    /// Original bytecode size for roundtrip jump fixup.
+    pub fn lifted_byte_size(&self) -> usize {
+        use crate::bytecode::*;
+        match self {
+            IrInst::Const { .. } => 1 + 4,
+            IrInst::Null { .. } => 1,
+            IrInst::LoadGlobal { .. }
+            | IrInst::StoreGlobal { .. }
+            | IrInst::LoadLocal { .. }
+            | IrInst::StoreLocal { .. }
+            | IrInst::LoadUpvalue { .. }
+            | IrInst::StoreUpvalue { .. }
+            | IrInst::IncGlobal { .. } => 1 + 4,
+            IrInst::AddGlobal { .. } => 1 + 4 + 8,
+            IrInst::BinOp { .. } => 1,
+            IrInst::Not { .. } | IrInst::Print { .. } | IrInst::Pop { .. } => 1,
+            IrInst::Input { .. } => 1 + 1,
+            IrInst::Call { args, .. } => 1 + 4,
+            IrInst::MakeClosure { func, .. } => {
+                let _ = func;
+                1 + 4 + 4 + 4 // + captures patched via lifted_byte_size_with
+            }
+            IrInst::BuildArray { elements, .. } => 1 + 4 + 1,
+            IrInst::BuildObject { field_keys, .. } => 1 + 4 + field_keys.len() * 4,
+            IrInst::IndexGet { .. }
+            | IrInst::IndexSet { .. }
+            | IrInst::ArrayLen { .. }
+            | IrInst::ArrayPop { .. }
+            | IrInst::ObjectGet { .. }
+            | IrInst::ObjectSet { .. }
+            | IrInst::ObjectDelete { .. }
+            | IrInst::ObjectKeys { .. }
+            | IrInst::ObjectGetOrCreate { .. }
+            | IrInst::IsArray { .. }
+            | IrInst::IsObject { .. }
+            | IrInst::MemberLength { .. }
+            | IrInst::Type { .. } => 1,
+            IrInst::ObjectGetConst { .. }
+            | IrInst::ObjectGetOrCreateConst { .. } => 1 + 4,
+            IrInst::ArrayPush { .. } => 1 + 1,
+            IrInst::Wait { .. } => 1 + 1,
+            IrInst::LoopIncLess { .. } => 1 + 4 + 8,
+            IrInst::LoopStepLess { .. } => 1 + 4 + 8 + 8,
+            IrInst::Jump { .. } | IrInst::JumpIfFalse { .. } => 1 + 4,
+            IrInst::Return { .. } => 1,
+            IrInst::LessConstJumpIfFalse { .. } => 1 + 4 + 8 + 4,
+            IrInst::ForInArrayHeader { .. } => 1 + 4 + 4 + 4,
+            IrInst::ForInArrayNext { .. } => 1 + 4 + 4,
+            IrInst::StorePathCur { .. } | IrInst::LoadPathCur { .. } => 1 + 4,
+        }
+    }
+
+    pub fn lifted_byte_size_with(&self, module: &super::types::IrModule) -> usize {
+        match self {
+            IrInst::MakeClosure { func, .. } => {
+                let f = &module.functions[func.0 as usize];
+                1 + 4 + 4 + 4 + f.captures.len() * 5
+            }
+            other => other.lifted_byte_size(),
+        }
     }
 }

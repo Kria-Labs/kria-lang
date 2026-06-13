@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::bytecode::*;
 
-use super::inst::{IrBinOp, IrInst, IrTerminator};
+use super::inst::{IrBinOp, IrInst};
 use super::types::{IrFunction, IrModule};
-use super::value::{BlockId, FunctionId};
+use super::value::FunctionId;
 
 pub struct IrEmitter {
     bytecode: Bytecode,
@@ -190,6 +190,14 @@ impl IrEmitter {
                 self.bytecode.emit_byte(OP_LOAD_GLOBAL);
                 self.bytecode.emit_u32(*slot);
             }
+            IrInst::Jump { .. }
+            | IrInst::JumpIfFalse { .. }
+            | IrInst::Return { .. }
+            | IrInst::LessConstJumpIfFalse { .. }
+            | IrInst::ForInArrayHeader { .. }
+            | IrInst::ForInArrayNext { .. } => {
+                unreachable!("control flow handled in emit_function_linear")
+            }
         }
     }
 
@@ -199,7 +207,7 @@ impl IrEmitter {
             let skip = self.bytecode.emit_u32(0);
             let offset = self.bytecode.code.len() as u32;
             self.function_offsets.insert(func_id, offset);
-            self.emit_function_with_labels(&module.functions[func_id.0 as usize], module);
+            self.emit_function_linear(&module.functions[func_id.0 as usize], module);
             self.bytecode.patch_u32(skip, self.bytecode.code.len() as u32);
             self.emitted_functions.insert(func_id);
         }
@@ -214,101 +222,89 @@ impl IrEmitter {
         }
     }
 
-    fn emit_function_with_labels(&mut self, func: &IrFunction, module: &IrModule) {
-        let mut labels: HashMap<BlockId, u32> = HashMap::new();
-        let mut pending: Vec<(usize, BlockId)> = Vec::new();
-        let mut order = Vec::new();
-        let mut seen = HashSet::new();
-        schedule_blocks(func.entry, func, &mut order, &mut seen);
+    fn emit_function_linear(&mut self, func: &IrFunction, module: &IrModule) {
+        let block = &func.blocks[func.entry.0 as usize];
+        let base_emit = self.bytecode.code.len() as u32;
+        let base_lift = func.lift_start;
+        let mut fixups: Vec<(usize, u32)> = Vec::new();
+        let mut ip_map: HashMap<u32, u32> = HashMap::new();
 
-        for block_id in &order {
-            labels.insert(*block_id, self.bytecode.code.len() as u32);
-            let block = &func.blocks[block_id.0 as usize];
-            for inst in &block.insts {
-                self.emit_inst(inst, module);
-            }
-            match &block.term {
-                Some(IrTerminator::Jump { target }) => {
+        for (i, inst) in block.insts.iter().enumerate() {
+            let old_ip = block.inst_ips.get(i).copied().unwrap_or_else(|| {
+                if i == 0 {
+                    func.lift_start
+                } else {
+                    block.inst_ips.get(i - 1).copied().unwrap_or(func.lift_start)
+                        + block.insts[i - 1].lifted_byte_size_with(module) as u32
+                }
+            });
+            ip_map.insert(old_ip, self.bytecode.code.len() as u32);
+
+            match inst {
+                IrInst::Jump { target_ip } => {
                     self.bytecode.emit_byte(OP_JUMP);
-                    pending.push((self.bytecode.emit_u32(0), *target));
+                    fixups.push((self.bytecode.emit_u32(0), *target_ip));
                 }
-                Some(IrTerminator::Branch { else_block, .. }) => {
+                IrInst::JumpIfFalse { target_ip } => {
                     self.bytecode.emit_byte(OP_JUMP_IF_FALSE);
-                    pending.push((self.bytecode.emit_u32(0), *else_block));
+                    fixups.push((self.bytecode.emit_u32(0), *target_ip));
                 }
-                Some(IrTerminator::Return { value }) => {
+                IrInst::Return { value } => {
                     if value.is_none() {
                         self.bytecode.emit_byte(OP_NULL);
                     }
                     self.bytecode.emit_byte(OP_RETURN);
                 }
-                Some(IrTerminator::ForInArray {
+                IrInst::LessConstJumpIfFalse {
+                    global_idx,
+                    limit,
+                    target_ip,
+                } => {
+                    self.bytecode.emit_byte(OP_LESS_CONST_JUMP_IF_FALSE);
+                    self.bytecode.emit_u32(*global_idx);
+                    self.bytecode.emit_i64(*limit);
+                    fixups.push((self.bytecode.emit_u32(0), *target_ip));
+                }
+                IrInst::ForInArrayHeader {
                     arr_slot,
                     i_slot,
-                    item_local,
-                    exit_block,
-                    ..
-                }) => {
-                    let header = self.bytecode.code.len();
+                    exit_ip,
+                } => {
                     self.bytecode.emit_byte(OP_FOR_IN_ARRAY_HEADER);
                     self.bytecode.emit_u32(*arr_slot);
                     self.bytecode.emit_u32(*i_slot);
-                    pending.push((self.bytecode.emit_u32(0), *exit_block));
-                    self.bytecode.emit_byte(OP_STORE_LOCAL);
-                    self.bytecode.emit_u32(*item_local);
-                    let _ = header;
+                    fixups.push((self.bytecode.emit_u32(0), *exit_ip));
                 }
-                None => {}
+                IrInst::ForInArrayNext {
+                    i_slot,
+                    loop_start_ip,
+                } => {
+                    self.bytecode.emit_byte(OP_FOR_IN_ARRAY_NEXT);
+                    self.bytecode.emit_u32(*i_slot);
+                    fixups.push((self.bytecode.emit_u32(0), *loop_start_ip));
+                }
+                IrInst::MakeClosure { func: fid, .. } => self.emit_make_closure(*fid, module),
+                _ => self.emit_inst(inst, module),
             }
         }
 
-        for (pos, target) in pending {
-            if let Some(&addr) = labels.get(&target) {
-                self.bytecode.patch_u32(pos, addr);
-            }
+        if let (Some(&last_ip), Some(last_inst)) = (block.inst_ips.last(), block.insts.last()) {
+            let end_old = last_ip + last_inst.lifted_byte_size_with(module) as u32;
+            ip_map.insert(end_old, self.bytecode.code.len() as u32);
+        }
+
+        for (pos, old_target) in fixups {
+            let new_target = ip_map.get(&old_target).copied().unwrap_or_else(|| {
+                base_emit + old_target.saturating_sub(base_lift)
+            });
+            self.bytecode.patch_u32(pos, new_target);
         }
     }
 }
 
 pub fn emit_module(module: &IrModule) -> Bytecode {
     let mut emitter = IrEmitter::new(module);
-    emitter.emit_function_with_labels(module.entry_function(), module);
+    emitter.emit_function_linear(module.entry_function(), module);
     emitter.bytecode.num_globals = module.num_globals();
     emitter.bytecode
-}
-
-fn schedule_blocks(
-    id: BlockId,
-    func: &IrFunction,
-    order: &mut Vec<BlockId>,
-    seen: &mut HashSet<BlockId>,
-) {
-    if !seen.insert(id) {
-        return;
-    }
-    order.push(id);
-    let block = &func.blocks[id.0 as usize];
-    if let Some(term) = &block.term {
-        match term {
-            IrTerminator::Jump { target } => schedule_blocks(*target, func, order, seen),
-            IrTerminator::Branch {
-                then_block,
-                else_block,
-                ..
-            } => {
-                schedule_blocks(*then_block, func, order, seen);
-                schedule_blocks(*else_block, func, order, seen);
-            }
-            IrTerminator::ForInArray { body, exit_block, .. } => {
-                schedule_blocks(*body, func, order, seen);
-                schedule_blocks(*exit_block, func, order, seen);
-            }
-            IrTerminator::Return { .. } => {}
-        }
-    }
-    for block in &func.blocks {
-        if let Some(IrTerminator::Jump { target }) = &block.term {
-            schedule_blocks(*target, func, order, seen);
-        }
-    }
 }
