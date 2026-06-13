@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use crate::ast::{Expression, Statement, Literal, BinaryOperator, UnaryOperator};
 use crate::bytecode::*;
 use crate::compile_opt::{fold_binary_literal, hoist_global_names, hoistable_member_pairs};
+use crate::ir::{run_ir_passes, IrRecorder};
+use crate::optimizer::optimize;
 use crate::vm::Value;
 use std::sync::Arc;
 
@@ -32,6 +34,7 @@ struct LoopContext {
 
 pub struct Compiler {
     bytecode: Bytecode,
+    ir: IrRecorder,
     globals: HashMap<String, usize>,
     scope_stack: Vec<CompileScope>,
     for_loop_counter: usize,
@@ -41,12 +44,17 @@ pub struct Compiler {
     import_bindings: HashMap<String, HashMap<String, usize>>,
     /// Loop-invariant hoisting: (obj, member) -> temp global name
     member_hoist: HashMap<(String, String), String>,
+    /// Pending IR mirror after opcode that takes u32/i64 operand.
+    pending_ir_op: Option<u8>,
+    pending_ir_u32: Option<u32>,
+    pending_ir_i64: Option<i64>,
 }
 
 impl Compiler {
     pub fn new() -> Self {
         Compiler {
             bytecode: Bytecode::new(),
+            ir: IrRecorder::new(),
             globals: HashMap::new(),
             scope_stack: Vec::new(),
             for_loop_counter: 0,
@@ -54,6 +62,9 @@ impl Compiler {
             loop_stack: Vec::new(),
             import_bindings: HashMap::new(),
             member_hoist: HashMap::new(),
+            pending_ir_op: None,
+            pending_ir_u32: None,
+            pending_ir_i64: None,
         }
     }
 
@@ -106,7 +117,25 @@ impl Compiler {
 
     pub fn finish_bytecode(mut self) -> Bytecode {
         self.bytecode.num_globals = self.globals.len();
-        self.bytecode
+        let direct = self.bytecode;
+        let mut module = self.ir.finish();
+        module.constants = direct.constants.clone();
+        for (name, &idx) in &self.globals {
+            while module.globals.len() <= idx {
+                module.globals.push(crate::ir::types::IrGlobal {
+                    name: format!("g{}", module.globals.len()),
+                    index: module.globals.len() as u32,
+                });
+            }
+            module.globals[idx] = crate::ir::types::IrGlobal {
+                name: name.clone(),
+                index: idx as u32,
+            };
+            module.global_map.insert(name.clone(), idx as u32);
+        }
+        run_ir_passes(&mut module);
+        let _ = crate::ir::dump_ir(&module);
+        optimize(direct)
     }
 
     pub fn bytecode(&self) -> &Bytecode {
@@ -134,14 +163,132 @@ impl Compiler {
     }
 
     fn emit_opcode(&mut self, op: u8) -> usize {
+        self.mirror_opcode_to_ir(op);
+        if matches!(
+            op,
+            OP_LOAD_GLOBAL
+                | OP_STORE_GLOBAL
+                | OP_LOAD_LOCAL
+                | OP_STORE_LOCAL
+                | OP_LOAD_UPVALUE
+                | OP_STORE_UPVALUE
+                | OP_CALL_FUNCTION
+                | OP_BUILD_ARRAY
+                | OP_BUILD_OBJECT
+                | OP_OBJECT_GET_CONST
+                | OP_OBJECT_GET_OR_CREATE_CONST
+                | OP_LOOP_INC_LESS
+                | OP_LOOP_STEP_LESS
+                | OP_ADD_GLOBAL
+        ) {
+            self.pending_ir_op = Some(op);
+        }
         self.bytecode.emit_byte(op)
     }
 
+    fn mirror_opcode_to_ir(&mut self, op: u8) {
+        match op {
+            OP_ADD | OP_SUBTRACT | OP_MULTIPLY | OP_DIVIDE | OP_EQUALS | OP_NOT_EQUALS
+            | OP_GREATER | OP_LESS | OP_GREATER_EQUAL | OP_LESS_EQUAL => self.ir.emit_binop(op),
+            OP_NOT => self.ir.emit_not(),
+            OP_PRINT => self.ir.emit_print(),
+            OP_POP => self.ir.emit_pop(),
+            OP_NULL => {
+                self.ir.emit_null();
+            }
+            OP_RETURN => self.ir.emit_return(),
+            OP_INDEX_GET => self.ir.emit_index_get(),
+            OP_INDEX_SET => self.ir.emit_index_set(),
+            OP_ARRAY_LEN => self.ir.emit_array_len(),
+            OP_ARRAY_PUSH => self.ir.emit_array_push(),
+            OP_ARRAY_POP => self.ir.emit_array_pop(),
+            OP_OBJECT_GET => self.ir.emit_object_get(),
+            OP_OBJECT_SET => self.ir.emit_object_set(),
+            OP_OBJECT_DELETE => self.ir.emit_object_delete(),
+            OP_OBJECT_KEYS => self.ir.emit_object_keys(),
+            OP_OBJECT_GET_OR_CREATE => self.ir.emit_object_get_or_create(),
+            OP_IS_ARRAY => self.ir.emit_is_array(),
+            OP_IS_OBJECT => self.ir.emit_is_object(),
+            OP_MEMBER_LENGTH => self.ir.emit_member_length(),
+            OP_TYPE => self.ir.emit_type(),
+            OP_WAIT => self.ir.emit_wait(),
+            OP_INC_GLOBAL => {}
+            OP_INPUT => {}
+            _ => {}
+        }
+    }
+
+    fn flush_pending_ir_u32(&mut self, value: u32) {
+        if let Some(op) = self.pending_ir_op.take() {
+            match op {
+                OP_LOAD_GLOBAL => self.ir.emit_load_global(value),
+                OP_STORE_GLOBAL => self.ir.emit_store_global(value),
+                OP_LOAD_LOCAL => self.ir.emit_load_local(value),
+                OP_STORE_LOCAL => self.ir.emit_store_local(value),
+                OP_LOAD_UPVALUE => self.ir.emit_load_upvalue(value),
+                OP_STORE_UPVALUE => self.ir.emit_store_upvalue(value),
+                OP_CALL_FUNCTION => self.ir.emit_call(value),
+                OP_OBJECT_GET_CONST => self.ir.emit_object_get_const(value),
+                OP_OBJECT_GET_OR_CREATE_CONST => self.ir.emit_object_get_or_create_const(value),
+                OP_ADD_GLOBAL => {
+                    self.pending_ir_u32 = Some(value);
+                    self.pending_ir_op = Some(OP_ADD_GLOBAL);
+                    return;
+                }
+                OP_BUILD_ARRAY => self.ir.emit_build_array(value, false),
+                OP_BUILD_OBJECT => {
+                    self.pending_ir_u32 = Some(value);
+                    self.pending_ir_op = Some(OP_BUILD_OBJECT);
+                    return;
+                }
+                OP_LOOP_INC_LESS => {
+                    self.pending_ir_u32 = Some(value);
+                    self.pending_ir_op = Some(OP_LOOP_INC_LESS);
+                    return;
+                }
+                OP_LOOP_STEP_LESS => {
+                    self.pending_ir_u32 = Some(value);
+                    self.pending_ir_op = Some(OP_LOOP_STEP_LESS);
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn emit_u32(&mut self, value: u32) -> usize {
+        self.flush_pending_ir_u32(value);
         self.bytecode.emit_u32(value)
     }
 
     fn emit_i64(&mut self, value: i64) -> usize {
+        if let Some(op) = self.pending_ir_op {
+            match op {
+                OP_ADD_GLOBAL => {
+                    self.pending_ir_op = None;
+                    if let Some(slot) = self.pending_ir_u32.take() {
+                        self.ir.emit_add_global(slot, value);
+                    }
+                }
+                OP_LOOP_INC_LESS => {
+                    self.pending_ir_op = None;
+                    if let Some(slot) = self.pending_ir_u32.take() {
+                        self.ir.emit_loop_inc_less(slot, value);
+                    }
+                }
+                OP_LOOP_STEP_LESS => {
+                    if self.pending_ir_i64.is_none() {
+                        self.pending_ir_i64 = Some(value);
+                    } else if let (Some(slot), Some(limit)) =
+                        (self.pending_ir_u32.take(), self.pending_ir_i64.take())
+                    {
+                        self.pending_ir_op = None;
+                        self.ir.emit_loop_step_less(slot, limit, value);
+                    }
+                }
+                _ => {}
+            }
+        }
         self.bytecode.emit_i64(value)
     }
 
@@ -153,6 +300,7 @@ impl Compiler {
         let idx = self.bytecode.add_constant(value);
         self.emit_opcode(OP_CONSTANT);
         self.emit_u32(idx);
+        self.ir.emit_const(idx);
     }
 
     fn emit_load_var(&mut self, resolved: VarResolution) -> Result<(), String> {
