@@ -1,26 +1,45 @@
 ; Kria-lang NSIS Installer
 ; Build with: makensis kria-setup.nsi
 ; Requires: NSIS 3.x (https://nsis.sourceforge.io)
+; 
+; Icon: kria.ico
 
 !define PRODUCT_NAME "Kria"
-!define PRODUCT_VERSION "1.0.0"
+!define PRODUCT_VERSION "1.2.0"
 !define PRODUCT_PUBLISHER "Piotriox"
 !define PRODUCT_EXE "kria.exe"
 !define PRODUCT_REGKEY "Software\Kria"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "release\kria-${PRODUCT_VERSION}-windows-x86_64-setup.exe"
+OutFile "kria-${PRODUCT_VERSION}-windows-x86_64-setup.exe"
 InstallDir "$LOCALAPPDATA\Kria"
 InstallDirRegKey HKCU "${PRODUCT_REGKEY}" "InstallDir"
 RequestExecutionLevel user
 
 ; Modern UI
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
+
+; UI Customization
+!define MUI_ABORTWARNING
+!define MUI_ICON "kria.ico"
+!define MUI_UNICON "kria.ico"
+!define MUI_HEADERIMAGE
+!define MUI_HEADERIMAGE_HEIGHT 150
+!define MUI_WELCOMEFINISHPAGE_BITMAP_NOSTRETCH
 
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "LICENSE"
+!insertmacro MUI_PAGE_LICENSE "../LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+
+; Finish page with custom message
+!define MUI_FINISHPAGE_TEXT "Kria ${PRODUCT_VERSION} has been successfully installed!$\r$\n$\r$\nTo use Kria, open Command Prompt and type:$\r$\n$\r$\nkria script.krx$\r$\n$\r$\nOr enter the REPL by typing:$\r$\n$\r$\nkria"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "Open Kria REPL"
+!define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\README.md"
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Read Documentation"
+
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_WELCOME
@@ -36,19 +55,24 @@ Section "Kria" SecMain
     SetOutPath $INSTDIR
 
     ; Copy binary
-    File "target\release\${PRODUCT_EXE}"
+    File "..\target\release\${PRODUCT_EXE}"
 
     ; Copy docs
-    File "README.md"
-    File "LICENSE"
-    File "test.krx"
+    File "..\README.md"
+    File "..\LICENSE"
+    File "..\test.krx"
 
     ; Write registry
     WriteRegStr HKCU "${PRODUCT_REGKEY}" "InstallDir" $INSTDIR
     WriteRegStr HKCU "${PRODUCT_REGKEY}" "Version" "${PRODUCT_VERSION}"
 
-    ; Add to PATH
-    EnVar::AddValue "PATH" $INSTDIR
+    ; Add to PATH (registry method)
+    ReadRegStr $0 HKCU "Environment" "PATH"
+    ${If} $0 == ""
+        WriteRegStr HKCU "Environment" "PATH" $INSTDIR
+    ${Else}
+        WriteRegStr HKCU "Environment" "PATH" "$0;$INSTDIR"
+    ${EndIf}
 
     ; Create uninstaller
     WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -71,13 +95,10 @@ Section ".krx file association (Recommended)" SecAssoc
     WriteRegStr HKCU "Software\Classes\.krx" "" "Kria.Script"
     WriteRegStr HKCU "Software\Classes\Kria.Script" "" "Kria Script"
     WriteRegStr HKCU "Software\Classes\Kria.Script\DefaultIcon" "" "$INSTDIR\${PRODUCT_EXE},0"
-    WriteRegStr HKCU "Software\Classes\Kria.Script\shell\open\command" "" '"$INSTDIR\${PRODUCT_EXE}" "%1"'
+    WriteRegStr HKCU "Software\Classes\Kria.Script\shell\open\command" "" '"$INSTDIR\${PRODUCT_EXE}" "%%1"'
 SectionEnd
 
 Section Uninstall
-    ; Remove from PATH
-    EnVar::DeleteValue "PATH" $INSTDIR
-
     ; Remove file association
     DeleteRegKey HKCU "Software\Classes\.krx"
     DeleteRegKey HKCU "Software\Classes\Kria.Script"
