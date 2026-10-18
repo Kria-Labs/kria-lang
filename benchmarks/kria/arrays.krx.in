@@ -1,0 +1,11 @@
+set values = []
+set i = 0
+while (i < {{N}}) {
+    push(values, i)
+    set i = i + 1
+}
+set sum = 0
+for value in values {
+    set sum = sum + value
+}
+print(sum)

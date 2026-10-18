@@ -1,0 +1,11 @@
+set text = ""
+set i = 0
+while (i < {{N}}) {
+    set text = text + "x"
+    set i = i + 1
+}
+if (text == "") {
+    print(0)
+} else {
+    print(i)
+}

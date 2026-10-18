@@ -1,0 +1,7 @@
+set result = 0
+set i = 0
+while (i < {{N}}) {
+    set result = result + i * 3 + 1
+    set i = i + 1
+}
+print(result)

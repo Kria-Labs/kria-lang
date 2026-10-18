@@ -1,0 +1,13 @@
+fn fibonacci(n) {
+    if (n <= 1) {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+set sum = 0
+set i = 0
+while (i < {{N}}) {
+    set sum = sum + fibonacci(i)
+    set i = i + 1
+}
+print(sum)

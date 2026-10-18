@@ -1,0 +1,10 @@
+set item = { a: 0, b: 1, c: 3 }
+set sum = 0
+set i = 0
+while (i < {{N}}) {
+    item.a = item.a + 1
+    item.b = item.b + 1
+    set sum = sum + item.a + item.b + item.c
+    set i = i + 1
+}
+print(sum)

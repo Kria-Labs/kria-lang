@@ -1,0 +1,10 @@
+fn add(a, b) {
+    return a + b
+}
+set sum = 0
+set i = 0
+while (i < {{N}}) {
+    set sum = sum + add(i, 3)
+    set i = i + 1
+}
+print(sum)

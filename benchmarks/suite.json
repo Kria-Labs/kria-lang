@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "description": "Equivalent Kria, Node.js, and Python workloads. All sizes are iteration counts.",
+  "workloads": [
+    {
+      "id": "arithmetic",
+      "category": "numeric",
+      "description": "Integer arithmetic in a counted loop.",
+      "sizes": { "small": 2000000, "large": 8000000 }
+    },
+    {
+      "id": "branching",
+      "category": "control-flow",
+      "description": "Loop with a balanced conditional branch.",
+      "sizes": { "small": 2000000, "large": 8000000 }
+    },
+    {
+      "id": "nested-loops",
+      "category": "control-flow",
+      "description": "Two nested counted loops accumulating both indexes.",
+      "sizes": { "small": 1500, "large": 3500 }
+    },
+    {
+      "id": "function-calls",
+      "category": "functions",
+      "description": "Repeated calls to a small two-argument function.",
+      "sizes": { "small": 750000, "large": 3000000 }
+    },
+    {
+      "id": "recursion",
+      "category": "functions",
+      "description": "Sum of Fibonacci values using naive recursion.",
+      "sizes": { "small": 20, "large": 25 }
+    },
+    {
+      "id": "closures",
+      "category": "functions",
+      "description": "Repeated calls to a function that captures a multiplier.",
+      "sizes": { "small": 750000, "large": 3000000 }
+    },
+    {
+      "id": "arrays",
+      "category": "collections",
+      "description": "Append integers to an array, then traverse and sum it.",
+      "sizes": { "small": 150000, "large": 600000 }
+    },
+    {
+      "id": "objects",
+      "category": "collections",
+      "description": "Repeated property reads and writes with an accumulated checksum.",
+      "sizes": { "small": 150000, "large": 600000 }
+    },
+    {
+      "id": "strings",
+      "category": "strings",
+      "description": "Repeated single-character concatenation; report loop count after concatenation.",
+      "sizes": { "small": 8000, "large": 20000 }
+    }
+  ]
+}

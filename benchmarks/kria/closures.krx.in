@@ -1,0 +1,11 @@
+set factor = 3
+set multiply = fn(x) {
+    return x * factor
+}
+set sum = 0
+set i = 0
+while (i < {{N}}) {
+    set sum = sum + multiply(i)
+    set i = i + 1
+}
+print(sum)

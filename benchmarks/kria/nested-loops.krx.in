@@ -1,0 +1,11 @@
+set sum = 0
+set i = 0
+while (i < {{N}}) {
+    set j = 0
+    while (j < {{N}}) {
+        set sum = sum + i + j
+        set j = j + 1
+    }
+    set i = i + 1
+}
+print(sum)

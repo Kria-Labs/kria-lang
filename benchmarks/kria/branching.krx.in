@@ -1,0 +1,11 @@
+set count = 0
+set i = 0
+while (i < {{N}}) {
+    if (i < {{N}} / 2) {
+        set count = count + 1
+    } else {
+        set count = count + 2
+    }
+    set i = i + 1
+}
+print(count)
