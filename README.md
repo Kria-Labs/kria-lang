@@ -49,7 +49,7 @@ cargo build --release
 - Dynamic typing · `set` bindings · `print()` · `type()` · `wait(ms)` · `//` and `/* */` comments · `"..."` / `"""..."""` strings · newline-terminated statements
 - Operators: arithmetic, comparisons, `and` / `or` / `not`
 - Control flow: `if` / `elseif` / `else`, `while`, `break`, `continue`
-- Functions: `fn name(...)`, lambdas `fn(...) { }`, `return`, closures (copy-on-create captures)
+- Functions: `fn name(...)`, lambdas `fn(...) { }`, `return`, closures with captured variables
 
 ### Data
 
@@ -57,7 +57,7 @@ cargo build --release
 |---------|---------|
 | **Arrays** | Mutable `[...]`, immutable `#[...]`, index, `.length`, `push` / `pop`, `for item in arr` |
 | **Objects** | `{ key: value }`, dot / bracket access, property assign, `rmv()`, deep equality, `for key, value in obj` |
-| **Input** | `input<str>`, `input<int>`, `input<float>` with prompts |
+| **Input** | `input<str>` and `input<int>` with prompts (`input<float>` currently truncates decimals to integers) |
 
 ### Modules (multi-file)
 

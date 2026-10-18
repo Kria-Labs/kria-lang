@@ -15,6 +15,8 @@ cargo build --release
 ./target/release/kria test.krx
 ```
 
+On Windows, run the built executable as `.\target\release\kria.exe test.krx`.
+
 4. Explore [`examples/`](examples/) to see language features in context.
 
 ## Project layout
@@ -23,7 +25,9 @@ cargo build --release
 |------|---------|
 | `src/lexer.rs` | Tokenization |
 | `src/parser.rs` | AST / syntax |
-| `src/compiler.rs` | Bytecode generation |
+| `src/compiler.rs` | Bytecode generation and compilation pipeline |
+| `src/ir/` | IR lifting, optimization, and bytecode emission |
+| `src/optimizer.rs` | Bytecode peephole optimization |
 | `src/vm.rs` | Runtime |
 | `src/repl.rs` | Interactive REPL |
 | `src/modules.rs` | Multi-file import graph |
@@ -31,7 +35,7 @@ cargo build --release
 | `examples/` | Sample `.krx` programs |
 | `benchmarks/` | Performance scripts and `.krx` benches |
 
-Pipeline: **Lexer → Parser → Compiler → VM**. New syntax usually touches lexer, parser, and compiler; runtime behavior lives in `vm.rs`.
+Pipeline: **Lexer → Parser → Compiler → Bytecode → IR optimization → Bytecode → VM**. New syntax usually touches lexer, parser, and compiler; runtime behavior lives in `vm.rs`.
 
 ## Making changes
 
@@ -40,7 +44,7 @@ Pipeline: **Lexer → Parser → Compiler → VM**. New syntax usually touches l
 - Keep diffs focused; one feature or fix per PR when possible.
 - Add or update an example under `examples/` when behavior is user-visible.
 - Run `cargo test` and at least `test.krx` plus any related example before submitting.
-- If you change performance-sensitive paths, consider running `./benchmarks/benchmarks.sh` and noting results in the PR.
+- If you change performance-sensitive paths, consider running `./benchmarks/benchmarks.sh` (or `.\benchmarks\benchmarks.ps1` on Windows) and noting results in the PR.
 
 ### Documentation
 

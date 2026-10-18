@@ -5,7 +5,7 @@
 ; Icon: kria.ico
 
 !define PRODUCT_NAME "Kria"
-!define PRODUCT_VERSION "1.2.0"
+!define PRODUCT_VERSION "1.3.0"
 !define PRODUCT_PUBLISHER "Piotriox"
 !define PRODUCT_EXE "kria.exe"
 !define PRODUCT_REGKEY "Software\Kria"
