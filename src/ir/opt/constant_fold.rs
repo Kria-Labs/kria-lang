@@ -91,24 +91,27 @@ pub fn run(module: &mut IrModule) {
 }
 
 fn fold_const_binop(left: &Value, op: IrBinOp, right: &Value) -> Option<Value> {
+    use crate::vm::{apply_numeric_op, NumericOp};
+
+    let numeric_op = match op {
+        IrBinOp::Add => NumericOp::Add,
+        IrBinOp::Sub => NumericOp::Subtract,
+        IrBinOp::Mul => NumericOp::Multiply,
+        IrBinOp::Div => NumericOp::Divide,
+        IrBinOp::Eq => NumericOp::Equals,
+        IrBinOp::Ne => NumericOp::NotEquals,
+        IrBinOp::Gt => NumericOp::Greater,
+        IrBinOp::Lt => NumericOp::Less,
+        IrBinOp::Ge => NumericOp::GreaterEqual,
+        IrBinOp::Le => NumericOp::LessEqual,
+    };
+    if matches!(left, Value::Number(_) | Value::Float(_))
+        && matches!(right, Value::Number(_) | Value::Float(_))
+    {
+        return apply_numeric_op(numeric_op, left, right).ok();
+    }
+
     match (left, right) {
-        (Value::Number(l), Value::Number(r)) => Some(Value::Number(match op {
-            IrBinOp::Add => l + r,
-            IrBinOp::Sub => l - r,
-            IrBinOp::Mul => l * r,
-            IrBinOp::Div => {
-                if *r == 0 {
-                    return None;
-                }
-                l / r
-            }
-            IrBinOp::Eq => return Some(Value::Boolean(l == r)),
-            IrBinOp::Ne => return Some(Value::Boolean(l != r)),
-            IrBinOp::Gt => return Some(Value::Boolean(l > r)),
-            IrBinOp::Lt => return Some(Value::Boolean(l < r)),
-            IrBinOp::Ge => return Some(Value::Boolean(l >= r)),
-            IrBinOp::Le => return Some(Value::Boolean(l <= r)),
-        })),
         (Value::Boolean(l), Value::Boolean(r)) => match op {
             IrBinOp::Eq => Some(Value::Boolean(l == r)),
             IrBinOp::Ne => Some(Value::Boolean(l != r)),

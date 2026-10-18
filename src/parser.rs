@@ -98,6 +98,8 @@ impl Parser {
             }
             Token::Identifier(_)
             | Token::Number(_)
+            | Token::Float(_)
+            | Token::InvalidNumber(_)
             | Token::String(_)
             | Token::True
             | Token::False
@@ -639,6 +641,12 @@ impl Parser {
                 self.advance();
                 Ok(Expression::Literal(Literal::Number(n_val)))
             }
+            Token::Float(n) => {
+                let value = *n;
+                self.advance();
+                Ok(Expression::Literal(Literal::Float(value)))
+            }
+            Token::InvalidNumber(value) => Err(format!("Invalid numeric literal: {}", value)),
             Token::String(s) => {
                 let s_val = s.clone();
                 self.advance();
@@ -784,5 +792,26 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(tokens);
         parser.parse().expect("parse object assignment");
+    }
+
+    #[test]
+    fn parses_float_literals_in_expressions() {
+        let tokens = Lexer::new("set x = 1.25 + .5\nset y = 2e3").tokenize();
+        let statements = Parser::new(tokens).parse().expect("parse floats");
+        assert_eq!(statements.len(), 2);
+        assert!(matches!(
+            &statements[0],
+            Statement::Assignment {
+                value: Expression::BinaryOp { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &statements[1],
+            Statement::Assignment {
+                value: Expression::Literal(Literal::Float(2000.0)),
+                ..
+            }
+        ));
     }
 }

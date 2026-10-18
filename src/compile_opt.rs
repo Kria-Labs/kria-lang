@@ -225,58 +225,59 @@ pub fn fold_binary_literal(
     right: &Expression,
 ) -> Option<crate::vm::Value> {
     use crate::ast::Literal;
-    use crate::vm::Value;
+    use crate::vm::{apply_numeric_op, NumericOp, Value};
     use std::sync::Arc;
 
-    let (Literal::Number(l), Literal::Number(r)) = (
-        match left {
-            Expression::Literal(l) => l,
-            _ => return None,
-        },
-        match right {
-            Expression::Literal(l) => l,
-            _ => return None,
-        },
-    ) else {
-        return match (left, right) {
-            (
-                Expression::Literal(Literal::Boolean(l)),
-                Expression::Literal(Literal::Boolean(r)),
-            ) => Some(Value::Boolean(match op {
-                BinaryOperator::And => *l && *r,
-                BinaryOperator::Or => *l || *r,
-                _ => return None,
-            })),
-            (Expression::Literal(Literal::String(l)), Expression::Literal(Literal::String(r)))
-                if matches!(op, BinaryOperator::Add) =>
-            {
-                let mut s = String::with_capacity(l.len() + r.len());
-                s.push_str(l);
-                s.push_str(r);
-                Some(Value::String(crate::vm::StringValue::from(Arc::from(s))))
-            }
-            _ => None,
-        };
+    let left_literal = match left {
+        Expression::Literal(literal) => literal,
+        _ => return None,
+    };
+    let right_literal = match right {
+        Expression::Literal(literal) => literal,
+        _ => return None,
     };
 
-    Some(Value::Number(match op {
-        BinaryOperator::Add => l + r,
-        BinaryOperator::Subtract => l - r,
-        BinaryOperator::Multiply => l * r,
-        BinaryOperator::Divide => {
-            if *r == 0 {
-                return None;
-            }
-            l / r
+    let left_number = match left_literal {
+        Literal::Number(value) => Some(Value::Number(*value)),
+        Literal::Float(value) => Some(Value::Float(*value)),
+        _ => None,
+    };
+    let right_number = match right_literal {
+        Literal::Number(value) => Some(Value::Number(*value)),
+        Literal::Float(value) => Some(Value::Float(*value)),
+        _ => None,
+    };
+    if let (Some(left), Some(right)) = (&left_number, &right_number) {
+        let numeric_op = match op {
+            BinaryOperator::Add => NumericOp::Add,
+            BinaryOperator::Subtract => NumericOp::Subtract,
+            BinaryOperator::Multiply => NumericOp::Multiply,
+            BinaryOperator::Divide => NumericOp::Divide,
+            BinaryOperator::Equals => NumericOp::Equals,
+            BinaryOperator::NotEquals => NumericOp::NotEquals,
+            BinaryOperator::GreaterThan => NumericOp::Greater,
+            BinaryOperator::LessThan => NumericOp::Less,
+            BinaryOperator::GreaterOrEqual => NumericOp::GreaterEqual,
+            BinaryOperator::LessOrEqual => NumericOp::LessEqual,
+            BinaryOperator::And | BinaryOperator::Or => return None,
+        };
+        return apply_numeric_op(numeric_op, left, right).ok();
+    }
+
+    match (left_literal, right_literal) {
+        (Literal::Boolean(l), Literal::Boolean(r)) => Some(Value::Boolean(match op {
+            BinaryOperator::And => *l && *r,
+            BinaryOperator::Or => *l || *r,
+            _ => return None,
+        })),
+        (Literal::String(l), Literal::String(r)) if matches!(op, BinaryOperator::Add) => {
+            let mut s = String::with_capacity(l.len() + r.len());
+            s.push_str(l);
+            s.push_str(r);
+            Some(Value::String(crate::vm::StringValue::from(Arc::from(s))))
         }
-        BinaryOperator::Equals => return Some(Value::Boolean(l == r)),
-        BinaryOperator::NotEquals => return Some(Value::Boolean(l != r)),
-        BinaryOperator::GreaterThan => return Some(Value::Boolean(l > r)),
-        BinaryOperator::LessThan => return Some(Value::Boolean(l < r)),
-        BinaryOperator::GreaterOrEqual => return Some(Value::Boolean(l >= r)),
-        BinaryOperator::LessOrEqual => return Some(Value::Boolean(l <= r)),
-        BinaryOperator::And | BinaryOperator::Or => return None,
-    }))
+        _ => None,
+    }
 }
 
 /// Maps `(obj, member)` to hoisted global variable name.

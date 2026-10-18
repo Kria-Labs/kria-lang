@@ -26,6 +26,8 @@ pub enum Token {
     // Identifiers and Literals
     Identifier(String),
     Number(i64),
+    Float(f64),
+    InvalidNumber(String),
     String(String),
 
     // Operators
@@ -182,8 +184,9 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn read_number(&mut self) -> i64 {
+    fn read_number(&mut self) -> Token {
         let mut result = String::new();
+        let mut is_float = false;
 
         while let Some(ch) = self.current_char() {
             if ch.is_ascii_digit() {
@@ -194,7 +197,88 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        result.parse::<i64>().unwrap_or(0)
+        if self.current_char() == Some('.')
+            && self.peek_char().map_or(true, |ch| {
+                (!ch.is_alphabetic() && ch != '_') || matches!(ch, 'e' | 'E')
+            })
+        {
+            is_float = true;
+            result.push('.');
+            self.advance();
+            while let Some(ch) = self.current_char() {
+                if ch.is_ascii_digit() {
+                    result.push(ch);
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        is_float |= self.read_exponent_part(&mut result);
+
+        if is_float {
+            match result.parse::<f64>() {
+                Ok(value) if value.is_finite() => Token::Float(value),
+                _ => Token::InvalidNumber(result),
+            }
+        } else {
+            match result.parse::<i64>() {
+                Ok(value) => Token::Number(value),
+                Err(_) => Token::InvalidNumber(result),
+            }
+        }
+    }
+
+    fn read_exponent_part(&mut self, result: &mut String) -> bool {
+        if !matches!(self.current_char(), Some('e' | 'E')) {
+            return false;
+        }
+
+        let mut lookahead = self.input.clone();
+        let next = lookahead.next();
+        let exponent_has_digits = match next {
+            Some('+' | '-') => lookahead.next().map_or(false, |ch| ch.is_ascii_digit()),
+            Some(ch) => ch.is_ascii_digit(),
+            None => false,
+        };
+        if !exponent_has_digits {
+            return false;
+        }
+
+        result.push(self.current_char().unwrap());
+        self.advance();
+        if matches!(self.current_char(), Some('+' | '-')) {
+            result.push(self.current_char().unwrap());
+            self.advance();
+        }
+        while let Some(ch) = self.current_char() {
+            if ch.is_ascii_digit() {
+                result.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        true
+    }
+
+    fn read_leading_decimal(&mut self) -> Token {
+        let mut result = String::from("0.");
+        self.advance();
+        while let Some(ch) = self.current_char() {
+            if ch.is_ascii_digit() {
+                result.push(ch);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.read_exponent_part(&mut result);
+        match result.parse::<f64>() {
+            Ok(value) if value.is_finite() => Token::Float(value),
+            _ => Token::InvalidNumber(result),
+        }
     }
 
     fn read_identifier(&mut self) -> String {
@@ -316,6 +400,9 @@ impl<'a> Lexer<'a> {
                         return Token::Hash;
                     }
                     '.' => {
+                        if self.peek_char().map_or(false, |next| next.is_ascii_digit()) {
+                            return self.read_leading_decimal();
+                        }
                         self.advance();
                         return Token::Dot;
                     }
@@ -349,7 +436,7 @@ impl<'a> Lexer<'a> {
                         }
                         return Token::String(self.read_string());
                     }
-                    _ if ch.is_ascii_digit() => return Token::Number(self.read_number()),
+                    _ if ch.is_ascii_digit() => return self.read_number(),
                     _ if ch.is_alphabetic() || ch == '_' => {
                         let ident = self.read_identifier();
                         return match ident.as_str() {
@@ -434,5 +521,27 @@ mod tests {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize();
         assert_eq!(first_string_token(&tokens), "a\nhello\nworld");
+    }
+
+    #[test]
+    fn decimal_and_scientific_literals_are_tokenized() {
+        let mut lexer = Lexer::new("1.25 .5 2e3 4.5E-2 .5e2 1. 1.e2 6");
+        let tokens = lexer.tokenize();
+        assert!(tokens.contains(&Token::Float(1.25)));
+        assert!(tokens.contains(&Token::Float(0.5)));
+        assert!(tokens.contains(&Token::Float(2000.0)));
+        assert!(tokens.contains(&Token::Float(0.045)));
+        assert!(tokens.contains(&Token::Float(50.0)));
+        assert!(tokens.contains(&Token::Float(1.0)));
+        assert!(tokens.contains(&Token::Float(100.0)));
+        assert!(tokens.contains(&Token::Number(6)));
+    }
+
+    #[test]
+    fn out_of_range_numeric_literals_are_not_silently_changed() {
+        let mut lexer = Lexer::new("9223372036854775808 1e999");
+        let tokens = lexer.tokenize();
+        assert!(tokens.contains(&Token::InvalidNumber("9223372036854775808".to_string())));
+        assert!(tokens.contains(&Token::InvalidNumber("1e999".to_string())));
     }
 }

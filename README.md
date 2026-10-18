@@ -57,7 +57,12 @@ cargo build --release
 |---------|---------|
 | **Arrays** | Mutable `[...]`, immutable `#[...]`, index, `.length`, `push` / `pop`, `for item in arr` |
 | **Objects** | `{ key: value }`, dot / bracket access, property assign, `rmv()`, deep equality, `for key, value in obj` |
-| **Input** | `input<str>` and `input<int>` with prompts (`input<float>` currently truncates decimals to integers) |
+| **Integer and float** | 64-bit integers and double-precision floating-point values; mixed arithmetic promotes to float |
+| **Input** | `input<str>`, `input<int>`, and `input<float>` with prompts |
+
+Decimal and scientific-notation literals are supported (`0.25`, `.5`, `2e3`).
+Integer-only division remains integer division; an operation with a float
+produces a floating-point result.
 
 ### Modules (multi-file)
 

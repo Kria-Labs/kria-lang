@@ -100,6 +100,7 @@ pub enum UnaryOperator {
 #[derive(Debug, Clone)]
 pub enum Literal {
     Number(i64),
+    Float(f64),
     String(String),
     Boolean(bool),
     Null,

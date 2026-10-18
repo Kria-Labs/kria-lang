@@ -153,6 +153,7 @@ impl ArrayData {
 #[derive(Debug, Clone)]
 pub enum Value {
     Number(i64),
+    Float(f64),
     String(StringValue),
     Boolean(bool),
     Null,
@@ -163,6 +164,161 @@ pub enum Value {
     },
     Array(Rc<ArrayData>),
     Object(Rc<ObjectData>),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum NumericOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Equals,
+    NotEquals,
+    Greater,
+    Less,
+    GreaterEqual,
+    LessEqual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NumericError {
+    NotNumeric,
+    DivisionByZero,
+}
+
+pub(crate) fn apply_numeric_op(
+    op: NumericOp,
+    left: &Value,
+    right: &Value,
+) -> Result<Value, NumericError> {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => match op {
+            NumericOp::Add => Ok(Value::Number(left + right)),
+            NumericOp::Subtract => Ok(Value::Number(left - right)),
+            NumericOp::Multiply => Ok(Value::Number(left * right)),
+            NumericOp::Divide if *right == 0 => Err(NumericError::DivisionByZero),
+            NumericOp::Divide => Ok(Value::Number(left / right)),
+            NumericOp::Equals => Ok(Value::Boolean(left == right)),
+            NumericOp::NotEquals => Ok(Value::Boolean(left != right)),
+            NumericOp::Greater => Ok(Value::Boolean(left > right)),
+            NumericOp::Less => Ok(Value::Boolean(left < right)),
+            NumericOp::GreaterEqual => Ok(Value::Boolean(left >= right)),
+            NumericOp::LessEqual => Ok(Value::Boolean(left <= right)),
+        },
+        (Value::Number(left), Value::Float(right)) => {
+            apply_mixed_numeric_op(op, *left, *right, true)
+        }
+        (Value::Float(left), Value::Number(right)) => {
+            apply_mixed_numeric_op(op, *right, *left, false)
+        }
+        (Value::Float(left), Value::Float(right)) => apply_float_op(op, *left, *right),
+        _ => Err(NumericError::NotNumeric),
+    }
+}
+
+fn apply_mixed_numeric_op(
+    op: NumericOp,
+    integer: i64,
+    float: f64,
+    integer_is_left: bool,
+) -> Result<Value, NumericError> {
+    match op {
+        NumericOp::Add | NumericOp::Subtract | NumericOp::Multiply | NumericOp::Divide => {
+            if integer_is_left {
+                apply_float_op(op, integer as f64, float)
+            } else {
+                apply_float_op(op, float, integer as f64)
+            }
+        }
+        _ => {
+            let ordering = compare_i64_f64(integer, float);
+            let ordering = if integer_is_left {
+                ordering
+            } else {
+                ordering.map(std::cmp::Ordering::reverse)
+            };
+            Ok(apply_comparison_op(op, ordering))
+        }
+    }
+}
+
+fn compare_i64_f64(integer: i64, float: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+
+    const I64_UPPER_BOUND: f64 = 9_223_372_036_854_775_808.0;
+    const I64_LOWER_BOUND: f64 = -9_223_372_036_854_775_808.0;
+
+    if float.is_nan() {
+        return None;
+    }
+    if float >= I64_UPPER_BOUND {
+        return Some(Ordering::Less);
+    }
+    if float < I64_LOWER_BOUND {
+        return Some(Ordering::Greater);
+    }
+    if float == I64_LOWER_BOUND {
+        return Some(integer.cmp(&i64::MIN));
+    }
+
+    let truncated = float as i64;
+    match integer.cmp(&truncated) {
+        Ordering::Equal if float.fract() > 0.0 => Some(Ordering::Less),
+        Ordering::Equal if float.fract() < 0.0 => Some(Ordering::Greater),
+        ordering => Some(ordering),
+    }
+}
+
+fn float_less_than_i64(float: f64, integer: i64) -> bool {
+    compare_i64_f64(integer, float) == Some(std::cmp::Ordering::Greater)
+}
+
+fn apply_comparison_op(op: NumericOp, ordering: Option<std::cmp::Ordering>) -> Value {
+    use std::cmp::Ordering;
+
+    let result = match op {
+        NumericOp::Equals => ordering == Some(Ordering::Equal),
+        NumericOp::NotEquals => ordering != Some(Ordering::Equal),
+        NumericOp::Greater => ordering == Some(Ordering::Greater),
+        NumericOp::Less => ordering == Some(Ordering::Less),
+        NumericOp::GreaterEqual => matches!(ordering, Some(Ordering::Greater | Ordering::Equal)),
+        NumericOp::LessEqual => matches!(ordering, Some(Ordering::Less | Ordering::Equal)),
+        _ => unreachable!("comparison operator required"),
+    };
+    Value::Boolean(result)
+}
+
+fn numeric_error_message(op: &str, left: &Value, right: &Value, error: NumericError) -> String {
+    match error {
+        NumericError::DivisionByZero => "Division by zero".to_string(),
+        NumericError::NotNumeric => {
+            let requirement = match op {
+                "Add" => "two numbers or two strings",
+                "And" | "Or" => "booleans",
+                _ => "numbers",
+            };
+            format!(
+                "{} requires {}, found {:?} and {:?}",
+                op, requirement, left, right
+            )
+        }
+    }
+}
+
+fn apply_float_op(op: NumericOp, left: f64, right: f64) -> Result<Value, NumericError> {
+    match op {
+        NumericOp::Add => Ok(Value::Float(left + right)),
+        NumericOp::Subtract => Ok(Value::Float(left - right)),
+        NumericOp::Multiply => Ok(Value::Float(left * right)),
+        NumericOp::Divide if right == 0.0 => Err(NumericError::DivisionByZero),
+        NumericOp::Divide => Ok(Value::Float(left / right)),
+        NumericOp::Equals
+        | NumericOp::NotEquals
+        | NumericOp::Greater
+        | NumericOp::Less
+        | NumericOp::GreaterEqual
+        | NumericOp::LessEqual => Ok(apply_comparison_op(op, left.partial_cmp(&right))),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -178,6 +334,13 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Number(a), Value::Float(b)) => {
+                compare_i64_f64(*a, *b) == Some(std::cmp::Ordering::Equal)
+            }
+            (Value::Float(a), Value::Number(b)) => {
+                compare_i64_f64(*b, *a) == Some(std::cmp::Ordering::Equal)
+            }
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::Null, Value::Null) => true,
@@ -224,6 +387,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Number(n) => write!(f, "{}", n),
+            Value::Float(n) => write!(f, "{:?}", n),
             Value::String(s) => write!(f, "{}", s),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::Null => write!(f, "null"),
@@ -405,6 +569,28 @@ fn index_to_usize(index: Value) -> Result<usize, String> {
         Value::Number(_) => Err("Array index must be non-negative".to_string()),
         other => Err(format!("Array index must be a number, found {:?}", other)),
     }
+}
+
+fn parse_input_value(input: &str, has_str: bool, has_int: bool, has_float: bool) -> Option<Value> {
+    if has_int {
+        if let Ok(value) = input.parse::<i64>() {
+            return Some(Value::Number(value));
+        }
+    }
+
+    if has_float && (!has_int || input.parse::<i64>().is_err()) {
+        if let Ok(value) = input.parse::<f64>() {
+            if value.is_finite() {
+                return Some(Value::Float(value));
+            }
+        }
+    }
+
+    if has_str && input.parse::<i64>().is_err() && input.parse::<f64>().is_err() {
+        return Some(Value::String(StringValue::from(input)));
+    }
+
+    None
 }
 
 fn expect_array(val: Value) -> Result<Rc<ArrayData>, String> {
@@ -672,6 +858,13 @@ impl VM {
                             }
                             ip = loop_start;
                         }
+                    } else if let Value::Float(n) = *global {
+                        if float_less_than_i64(n, limit) {
+                            unsafe {
+                                self.set_global_unchecked(idx, Value::Float(n + 1.0));
+                            }
+                            ip = loop_start;
+                        }
                     } else {
                         return Err("LoopIncLess expects number".to_string());
                     }
@@ -694,6 +887,13 @@ impl VM {
                             }
                             ip = loop_start;
                         }
+                    } else if let Value::Float(n) = *global {
+                        if float_less_than_i64(n, limit) {
+                            unsafe {
+                                self.set_global_unchecked(idx, Value::Float(n + step as f64));
+                            }
+                            ip = loop_start;
+                        }
                     } else {
                         return Err("LoopStepLess expects number".to_string());
                     }
@@ -709,18 +909,26 @@ impl VM {
                         .last()
                         .ok_or_else(|| "Local loop outside function context".to_string())?;
                     let idx = frame.locals_start + offset;
-                    let Some(Value::Number(n)) = self.stack.get(idx) else {
-                        let value = self.stack.get(idx).cloned().unwrap_or(Value::Null);
-                        return Err(format!(
-                            "Less requires numbers, found {:?} and {:?}",
-                            value,
-                            Value::Number(limit)
-                        ));
-                    };
-                    let n = *n;
-                    if n < limit {
-                        self.stack[idx] = Value::Number(n + 1);
-                        ip = loop_start;
+                    match self.stack.get(idx) {
+                        Some(Value::Number(n)) if *n < limit => {
+                            self.stack[idx] = Value::Number(*n + 1);
+                            ip = loop_start;
+                        }
+                        Some(Value::Number(_)) => {}
+                        Some(Value::Float(n)) if float_less_than_i64(*n, limit) => {
+                            self.stack[idx] = Value::Float(*n + 1.0);
+                            ip = loop_start;
+                        }
+                        Some(Value::Float(_)) => {}
+                        Some(value) => {
+                            return Err(numeric_error_message(
+                                "Less",
+                                value,
+                                &Value::Number(limit),
+                                NumericError::NotNumeric,
+                            ));
+                        }
+                        None => return Err("Local variable out of bounds".to_string()),
                     }
                 }
                 OP_LOOP_STEP_LESS_LOCAL => {
@@ -736,18 +944,26 @@ impl VM {
                         .last()
                         .ok_or_else(|| "Local loop outside function context".to_string())?;
                     let idx = frame.locals_start + offset;
-                    let Some(Value::Number(n)) = self.stack.get(idx) else {
-                        let value = self.stack.get(idx).cloned().unwrap_or(Value::Null);
-                        return Err(format!(
-                            "Less requires numbers, found {:?} and {:?}",
-                            value,
-                            Value::Number(limit)
-                        ));
-                    };
-                    let n = *n;
-                    if n < limit {
-                        self.stack[idx] = Value::Number(n + step);
-                        ip = loop_start;
+                    match self.stack.get(idx) {
+                        Some(Value::Number(n)) if *n < limit => {
+                            self.stack[idx] = Value::Number(*n + step);
+                            ip = loop_start;
+                        }
+                        Some(Value::Number(_)) => {}
+                        Some(Value::Float(n)) if float_less_than_i64(*n, limit) => {
+                            self.stack[idx] = Value::Float(*n + step as f64);
+                            ip = loop_start;
+                        }
+                        Some(Value::Float(_)) => {}
+                        Some(value) => {
+                            return Err(numeric_error_message(
+                                "Less",
+                                value,
+                                &Value::Number(limit),
+                                NumericError::NotNumeric,
+                            ));
+                        }
+                        None => return Err("Local variable out of bounds".to_string()),
                     }
                 }
                 OP_INC_LOCAL | OP_ADD_LOCAL => {
@@ -768,14 +984,18 @@ impl VM {
                     let Some(value) = self.stack.get(idx) else {
                         return Err("Local variable out of bounds".to_string());
                     };
-                    let Value::Number(n) = value else {
-                        return Err(format!(
-                            "Add requires two numbers or two strings, found {:?} and {:?}",
-                            value,
-                            Value::Number(delta)
-                        ));
-                    };
-                    self.stack[idx] = Value::Number(*n + delta);
+                    match value {
+                        Value::Number(n) => self.stack[idx] = Value::Number(*n + delta),
+                        Value::Float(n) => self.stack[idx] = Value::Float(*n + delta as f64),
+                        _ => {
+                            return Err(numeric_error_message(
+                                "Add",
+                                value,
+                                &Value::Number(delta),
+                                NumericError::NotNumeric,
+                            ));
+                        }
+                    }
                 }
                 OP_APPEND_STRING_GLOBAL => {
                     let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
@@ -816,6 +1036,10 @@ impl VM {
                         if n >= limit {
                             ip = target;
                         }
+                    } else if let Value::Float(n) = *global {
+                        if !float_less_than_i64(n, limit) {
+                            ip = target;
+                        }
                     } else {
                         return Err("LessConstJumpIfFalse expects number".to_string());
                     }
@@ -832,6 +1056,10 @@ impl VM {
                         unsafe {
                             self.set_global_unchecked(idx, Value::Number(n + rhs));
                         }
+                    } else if let Value::Float(n) = *global {
+                        unsafe {
+                            self.set_global_unchecked(idx, Value::Float(n + rhs as f64));
+                        }
                     } else {
                         return Err("AddGlobal expects number".to_string());
                     }
@@ -845,6 +1073,10 @@ impl VM {
                     if let Value::Number(n) = *global {
                         unsafe {
                             self.set_global_unchecked(idx, Value::Number(n + 1));
+                        }
+                    } else if let Value::Float(n) = *global {
+                        unsafe {
+                            self.set_global_unchecked(idx, Value::Float(n + 1.0));
                         }
                     } else {
                         return Err("IncGlobal expects number".to_string());
@@ -893,62 +1125,65 @@ impl VM {
                 OP_ADD => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            self.stack.push(Value::Number(l + r));
-                        }
                         (Value::String(l), Value::String(r)) => {
                             self.stack.push(Value::String(StringValue::concat(&l, &r)));
                         }
-                        (l, r) => {
-                            return Err(format!(
-                                "Add requires two numbers or two strings, found {:?} and {:?}",
-                                l, r
-                            ))
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Number(left + right));
+                        }
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::Add, &left, &right).map_err(
+                                |error| numeric_error_message("Add", &left, &right, error),
+                            )?;
+                            self.stack.push(result);
                         }
                     }
                 }
                 OP_SUBTRACT => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            self.stack.push(Value::Number(l - r));
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Number(left - right));
                         }
-                        (l, r) => {
-                            return Err(format!(
-                                "Subtract requires two numbers, found {:?} and {:?}",
-                                l, r
-                            ))
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::Subtract, &left, &right)
+                                .map_err(|error| {
+                                    numeric_error_message("Subtract", &left, &right, error)
+                                })?;
+                            self.stack.push(result);
                         }
                     }
                 }
                 OP_MULTIPLY => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            self.stack.push(Value::Number(l * r));
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Number(left * right));
                         }
-                        (l, r) => {
-                            return Err(format!(
-                                "Multiply requires two numbers, found {:?} and {:?}",
-                                l, r
-                            ))
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::Multiply, &left, &right)
+                                .map_err(|error| {
+                                    numeric_error_message("Multiply", &left, &right, error)
+                                })?;
+                            self.stack.push(result);
                         }
                     }
                 }
                 OP_DIVIDE => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            if r == 0 {
-                                return Err("Division by zero".to_string());
-                            }
-                            self.stack.push(Value::Number(l / r));
+                        (Value::Number(_), Value::Number(0)) => {
+                            return Err("Division by zero".to_string());
                         }
-                        (l, r) => {
-                            return Err(format!(
-                                "Divide requires two numbers, found {:?} and {:?}",
-                                l, r
-                            ))
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Number(left / right));
+                        }
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::Divide, &left, &right)
+                                .map_err(|error| {
+                                    numeric_error_message("Divide", &left, &right, error)
+                                })?;
+                            self.stack.push(result);
                         }
                     }
                 }
@@ -963,53 +1198,59 @@ impl VM {
                 OP_GREATER => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            self.stack.push(Value::Boolean(l > r));
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Boolean(left > right));
                         }
-                        (l, r) => {
-                            return Err(format!(
-                                "Greater requires numbers, found {:?} and {:?}",
-                                l, r
-                            ))
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::Greater, &left, &right)
+                                .map_err(|error| {
+                                    numeric_error_message("Greater", &left, &right, error)
+                                })?;
+                            self.stack.push(result);
                         }
                     }
                 }
                 OP_LESS => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            self.stack.push(Value::Boolean(l < r));
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Boolean(left < right));
                         }
-                        (l, r) => {
-                            return Err(format!("Less requires numbers, found {:?} and {:?}", l, r))
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::Less, &left, &right).map_err(
+                                |error| numeric_error_message("Less", &left, &right, error),
+                            )?;
+                            self.stack.push(result);
                         }
                     }
                 }
                 OP_GREATER_EQUAL => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            self.stack.push(Value::Boolean(l >= r));
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Boolean(left >= right));
                         }
-                        (l, r) => {
-                            return Err(format!(
-                                "GreaterEqual requires numbers, found {:?} and {:?}",
-                                l, r
-                            ))
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::GreaterEqual, &left, &right)
+                                .map_err(|error| {
+                                numeric_error_message("GreaterEqual", &left, &right, error)
+                            })?;
+                            self.stack.push(result);
                         }
                     }
                 }
                 OP_LESS_EQUAL => {
                     let (left, right) = self.pop2()?;
                     match (left, right) {
-                        (Value::Number(l), Value::Number(r)) => {
-                            self.stack.push(Value::Boolean(l <= r));
+                        (Value::Number(left), Value::Number(right)) => {
+                            self.stack.push(Value::Boolean(left <= right));
                         }
-                        (l, r) => {
-                            return Err(format!(
-                                "LessEqual requires numbers, found {:?} and {:?}",
-                                l, r
-                            ))
+                        (left, right) => {
+                            let result = apply_numeric_op(NumericOp::LessEqual, &left, &right)
+                                .map_err(|error| {
+                                    numeric_error_message("LessEqual", &left, &right, error)
+                                })?;
+                            self.stack.push(result);
                         }
                     }
                 }
@@ -1327,26 +1568,10 @@ impl VM {
                             .map_err(|e| format!("Input error: {}", e))?;
                         let trimmed = buffer.trim().to_string();
 
-                        // Try integer first if permitted
-                        if has_int {
-                            if let Ok(num) = trimmed.parse::<i64>() {
-                                break Value::Number(num);
-                            }
-                        }
-
-                        // Try float if permitted (and not already parsed as int)
-                        if has_float && trimmed.parse::<i64>().is_err() {
-                            if let Ok(num) = trimmed.parse::<f64>() {
-                                break Value::Number(num as i64);
-                            }
-                        }
-
-                        // Try string if permitted and not numeric
-                        if has_str {
-                            if trimmed.parse::<i64>().is_err() && trimmed.parse::<f64>().is_err() {
-                                // Pure string (non-numeric)
-                                break Value::String(StringValue::from(trimmed));
-                            }
+                        if let Some(value) =
+                            parse_input_value(&trimmed, has_str, has_int, has_float)
+                        {
+                            break value;
                         }
 
                         // Invalid input, print error and retry
@@ -1371,7 +1596,7 @@ impl VM {
                 OP_TYPE => {
                     let val = self.pop()?;
                     let type_name = match &val {
-                        Value::Number(_) => "number",
+                        Value::Number(_) | Value::Float(_) => "number",
                         Value::String(_) => "string",
                         Value::Boolean(_) => "boolean",
                         Value::Null => "null",
@@ -1383,7 +1608,7 @@ impl VM {
                 }
                 OP_WAIT => {
                     let val = self.pop()?;
-                    let ms = match val {
+                    let duration = match val {
                         Value::Number(n) => {
                             if n < 0 {
                                 return Err(
@@ -1391,11 +1616,21 @@ impl VM {
                                         .to_string(),
                                 );
                             }
-                            n as u64
+                            std::time::Duration::from_millis(n as u64)
+                        }
+                        Value::Float(n) if n.is_finite() && n >= 0.0 => {
+                            std::time::Duration::try_from_secs_f64(n / 1000.0)
+                                .map_err(|_| "wait() duration is too large".to_string())?
+                        }
+                        Value::Float(_) => {
+                            return Err(
+                                "wait() requires a finite, non-negative number of milliseconds"
+                                    .to_string(),
+                            );
                         }
                         _ => return Err("wait() requires a number (milliseconds)".to_string()),
                     };
-                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    std::thread::sleep(duration);
                 }
                 _ => return Err(format!("Unknown opcode: {}", opcode)),
             }
@@ -1478,6 +1713,75 @@ mod tests {
             Value::String(StringValue::from("before after"))
         );
         assert_eq!(vm.globals[1], Value::String(StringValue::from("before")));
+    }
+
+    #[test]
+    fn float_display_keeps_decimal_notation_for_integral_values() {
+        assert_eq!(Value::Float(2.5).to_string(), "2.5");
+        assert_eq!(Value::Float(2.0).to_string(), "2.0");
+    }
+
+    #[test]
+    fn array_indices_remain_integers() {
+        assert_eq!(index_to_usize(Value::Number(2)), Ok(2));
+        assert!(index_to_usize(Value::Float(2.0)).is_err());
+    }
+
+    #[test]
+    fn mixed_numeric_comparisons_preserve_integer_precision() {
+        let large_integer = Value::Number(9_007_199_254_740_993);
+        let rounded_float = Value::Float(9_007_199_254_740_992.0);
+        assert_ne!(large_integer, rounded_float);
+        assert_eq!(
+            apply_numeric_op(NumericOp::Greater, &large_integer, &rounded_float),
+            Ok(Value::Boolean(true))
+        );
+        assert_eq!(
+            apply_numeric_op(NumericOp::Divide, &Value::Float(1.0), &Value::Number(0)),
+            Err(NumericError::DivisionByZero)
+        );
+        assert_eq!(
+            apply_numeric_op(
+                NumericOp::Equals,
+                &Value::Number(i64::MIN),
+                &Value::Float(-9_223_372_036_854_775_808.0)
+            ),
+            Ok(Value::Boolean(true))
+        );
+        assert_eq!(
+            apply_numeric_op(
+                NumericOp::Less,
+                &Value::Number(i64::MAX),
+                &Value::Float(9_223_372_036_854_775_808.0)
+            ),
+            Ok(Value::Boolean(true))
+        );
+        assert!(float_less_than_i64(
+            9_007_199_254_740_992.0,
+            9_007_199_254_740_993
+        ));
+        assert!(!float_less_than_i64(f64::NAN, 10));
+    }
+
+    #[test]
+    fn float_input_parses_fractional_and_integral_values_as_floats() {
+        assert_eq!(
+            parse_input_value("2.75", false, false, true),
+            Some(Value::Float(2.75))
+        );
+        assert_eq!(
+            parse_input_value("2", false, false, true),
+            Some(Value::Float(2.0))
+        );
+        assert_eq!(
+            parse_input_value("2", false, true, true),
+            Some(Value::Number(2))
+        );
+        assert_eq!(
+            parse_input_value("word", true, false, true),
+            Some(Value::String(StringValue::from("word")))
+        );
+        assert_eq!(parse_input_value("1e999", false, false, true), None);
     }
 
     #[test]

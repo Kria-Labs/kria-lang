@@ -894,6 +894,7 @@ impl Compiler {
                 _ => {
                     let val = match literal {
                         Literal::Number(n) => Value::Number(*n),
+                        Literal::Float(n) => Value::Float(*n),
                         Literal::String(s) => {
                             Value::String(crate::vm::StringValue::from(Arc::from(s.as_str())))
                         }
@@ -1402,6 +1403,27 @@ mod tests {
     }
 
     #[test]
+    fn floating_point_arithmetic_comparison_and_type_are_supported() {
+        run_source(
+            "set base = 1.25\nset sum = base + 2\nset difference = 5 - 2.5\nset product = 1.5 * 2\nset quotient = 3.0 / 2\nset reverse_quotient = 5 / 2.0\nset negative = 0.0 - .5\nset values = [.5, 1.25]\nset record = { amount: 1.25 }\nif (sum != 3.25) {\n  print(1 / 0)\n}\nif (difference != 2.5) {\n  print(1 / 0)\n}\nif (product != 3.0) {\n  print(1 / 0)\n}\nif (quotient != 1.5) {\n  print(1 / 0)\n}\nif (reverse_quotient != 2.5) {\n  print(1 / 0)\n}\nif (negative != -0.5) {\n  print(1 / 0)\n}\nif (values[0] != 0.5) {\n  print(1 / 0)\n}\nif (record.amount != 1.25) {\n  print(1 / 0)\n}\nset integer = 3\nif (integer > 2.5) {\n  set greater = true\n} else {\n  print(1 / 0)\n}\nif (integer >= 3.0) {\n  set greater_equal = true\n} else {\n  print(1 / 0)\n}\nif (2.5 < integer) {\n  set less = true\n} else {\n  print(1 / 0)\n}\nif (3.0 <= integer) {\n  set less_equal = true\n} else {\n  print(1 / 0)\n}\nif (type(1.0) != \"number\") {\n  print(1 / 0)\n}\nif (5 / 2 != 2) {\n  print(1 / 0)\n}",
+        )
+        .expect("float arithmetic and comparisons");
+    }
+
+    #[test]
+    fn fused_counter_loops_preserve_float_counters() {
+        let source = "set global_counter = 0.5\nwhile (global_counter < 3) {\n  set global_counter = global_counter + 1\n}\nfn count(local_counter) {\n  while (local_counter < 3) {\n    set local_counter = local_counter + 1\n  }\n  return local_counter\n}\nset local_result = count(0.5)\nif (global_counter != 3.5) {\n  print(1 / 0)\n}\nif (local_result != 3.5) {\n  print(1 / 0)\n}";
+        let tokens = Lexer::new(source).tokenize();
+        let statements = Parser::new(tokens).parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&statements).expect("compile");
+        let bytecode = compiler.finish_bytecode();
+        assert!(bytecode.code.contains(&OP_LOOP_INC_LESS));
+        assert!(bytecode.code.contains(&OP_LOOP_INC_LESS_LOCAL));
+        run_source(source).expect("fused loops must support float counters");
+    }
+
+    #[test]
     fn type_builtin_emits_opcode() {
         let tokens = Lexer::new("print(type(42))").tokenize();
         let mut parser = Parser::new(tokens);
@@ -1491,5 +1513,20 @@ mod tests {
         let bc = optimize(compiler.finish_bytecode());
         let mut vm = VM::new();
         vm.execute(&bc).expect("run wait()");
+    }
+
+    #[test]
+    fn wait_builtin_accepts_fractional_milliseconds() {
+        use crate::optimizer::optimize;
+        use crate::vm::VM;
+
+        let tokens = Lexer::new("wait(0.5)").tokenize();
+        let mut parser = Parser::new(tokens);
+        let stmts = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&stmts).expect("compile");
+        let bc = optimize(compiler.finish_bytecode());
+        let mut vm = VM::new();
+        vm.execute(&bc).expect("run fractional wait()");
     }
 }
