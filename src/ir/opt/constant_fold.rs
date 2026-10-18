@@ -26,6 +26,11 @@ pub fn run(module: &mut IrModule) {
                         out.push(inst);
                         out_ips.push(ip);
                     }
+                    IrInst::FoldedBinOp { result, idx, .. } => {
+                        const_map.insert(*result, *idx);
+                        out.push(inst);
+                        out_ips.push(ip);
+                    }
                     IrInst::BinOp {
                         result,
                         op,
@@ -56,6 +61,8 @@ pub fn run(module: &mut IrModule) {
                                     out.push(IrInst::FoldedBinOp {
                                         result: *result,
                                         idx,
+                                        left: *left,
+                                        right: *right,
                                     });
                                     out_ips.push(ip);
                                     continue;
@@ -109,9 +116,11 @@ fn fold_const_binop(left: &Value, op: IrBinOp, right: &Value) -> Option<Value> {
         },
         (Value::String(l), Value::String(r)) if matches!(op, IrBinOp::Add) => {
             let mut s = String::with_capacity(l.len() + r.len());
-            s.push_str(l);
-            s.push_str(r);
-            Some(Value::String(std::sync::Arc::from(s)))
+            s.push_str(l.as_str());
+            s.push_str(r.as_str());
+            Some(Value::String(crate::vm::StringValue::from(
+                std::sync::Arc::from(s),
+            )))
         }
         _ => None,
     }

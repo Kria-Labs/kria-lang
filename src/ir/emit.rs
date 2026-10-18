@@ -51,6 +51,20 @@ impl IrEmitter {
                 self.bytecode.emit_u32(*slot);
                 self.bytecode.emit_i64(*delta);
             }
+            IrInst::IncLocal { slot } => {
+                self.bytecode.emit_byte(OP_INC_LOCAL);
+                self.bytecode.emit_u32(*slot);
+            }
+            IrInst::AddLocal { slot, delta } => {
+                self.bytecode.emit_byte(OP_ADD_LOCAL);
+                self.bytecode.emit_u32(*slot);
+                self.bytecode.emit_i64(*delta);
+            }
+            IrInst::AppendStringGlobal { slot, suffix_idx } => {
+                self.bytecode.emit_byte(OP_APPEND_STRING_GLOBAL);
+                self.bytecode.emit_u32(*slot);
+                self.bytecode.emit_u32(*suffix_idx);
+            }
             IrInst::LoadLocal { slot, .. } => {
                 self.bytecode.emit_byte(OP_LOAD_LOCAL);
                 self.bytecode.emit_u32(*slot);
@@ -87,6 +101,10 @@ impl IrEmitter {
                 self.bytecode.emit_byte(OP_POP);
                 self.bytecode.emit_byte(OP_CONSTANT);
                 self.bytecode.emit_u32(*idx);
+            }
+            IrInst::Discard { instruction } => {
+                self.emit_inst(instruction, module);
+                self.bytecode.emit_byte(OP_POP);
             }
             IrInst::Not { .. } => {
                 self.bytecode.emit_byte(OP_NOT);
@@ -194,6 +212,17 @@ impl IrEmitter {
                 self.bytecode.emit_i64(*limit);
                 self.bytecode.emit_i64(*step);
             }
+            IrInst::LoopIncLessLocal { slot, limit } => {
+                self.bytecode.emit_byte(OP_LOOP_INC_LESS_LOCAL);
+                self.bytecode.emit_u32(*slot);
+                self.bytecode.emit_i64(*limit);
+            }
+            IrInst::LoopStepLessLocal { slot, limit, step } => {
+                self.bytecode.emit_byte(OP_LOOP_STEP_LESS_LOCAL);
+                self.bytecode.emit_u32(*slot);
+                self.bytecode.emit_i64(*limit);
+                self.bytecode.emit_i64(*step);
+            }
             IrInst::StorePathCur { slot, .. } => {
                 self.bytecode.emit_byte(OP_STORE_GLOBAL);
                 self.bytecode.emit_u32(*slot);
@@ -262,7 +291,7 @@ impl IrEmitter {
                     self.bytecode.emit_byte(OP_JUMP);
                     fixups.push((self.bytecode.emit_u32(0), *target_ip));
                 }
-                IrInst::JumpIfFalse { target_ip } => {
+                IrInst::JumpIfFalse { target_ip, .. } => {
                     self.bytecode.emit_byte(OP_JUMP_IF_FALSE);
                     fixups.push((self.bytecode.emit_u32(0), *target_ip));
                 }

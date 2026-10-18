@@ -9,5 +9,6 @@ pub fn run_ir_passes(module: &mut IrModule) {
     constant_fold::run(module);
     member_hoist::run(module);
     copy_prop::run(module);
+    constant_fold::run(module);
     dce::run(module);
 }

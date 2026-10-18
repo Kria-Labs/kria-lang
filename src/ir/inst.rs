@@ -96,6 +96,17 @@ pub enum IrInst {
         slot: u32,
         delta: i64,
     },
+    IncLocal {
+        slot: u32,
+    },
+    AddLocal {
+        slot: u32,
+        delta: i64,
+    },
+    AppendStringGlobal {
+        slot: u32,
+        suffix_idx: u32,
+    },
     LoadLocal {
         result: ValueId,
         slot: u32,
@@ -122,6 +133,11 @@ pub enum IrInst {
     FoldedBinOp {
         result: ValueId,
         idx: u32,
+        left: ValueId,
+        right: ValueId,
+    },
+    Discard {
+        instruction: Box<IrInst>,
     },
     Not {
         result: ValueId,
@@ -242,6 +258,15 @@ pub enum IrInst {
         limit: i64,
         step: i64,
     },
+    LoopIncLessLocal {
+        slot: u32,
+        limit: i64,
+    },
+    LoopStepLessLocal {
+        slot: u32,
+        limit: i64,
+        step: i64,
+    },
     /// Side-effect only path assignment prelude.
     StorePathCur {
         slot: u32,
@@ -257,6 +282,7 @@ pub enum IrInst {
     },
     /// Pop boolean; branch when false (bytecode IP label).
     JumpIfFalse {
+        cond: ValueId,
         target_ip: u32,
     },
     Return {
@@ -339,12 +365,113 @@ impl IrInst {
         }
     }
 
+    pub fn visit_uses(&self, mut visit: impl FnMut(ValueId)) {
+        match self {
+            IrInst::StoreGlobal { value, .. }
+            | IrInst::StoreLocal { value, .. }
+            | IrInst::StoreUpvalue { value, .. }
+            | IrInst::StorePathCur { value, .. }
+            | IrInst::Print { value }
+            | IrInst::Pop { value }
+            | IrInst::Wait { value }
+            | IrInst::Not { value, .. }
+            | IrInst::IsArray { value, .. }
+            | IrInst::IsObject { value, .. }
+            | IrInst::Type { value, .. } => visit(*value),
+            IrInst::BinOp { left, right, .. } => {
+                visit(*left);
+                visit(*right);
+            }
+            IrInst::FoldedBinOp { left, right, .. } => {
+                visit(*left);
+                visit(*right);
+            }
+            IrInst::Input { prompt, .. } => visit(*prompt),
+            IrInst::Call { callee, args, .. } => {
+                visit(*callee);
+                args.iter().copied().for_each(&mut visit);
+            }
+            IrInst::BuildArray { elements, .. } => {
+                elements.iter().copied().for_each(&mut visit);
+            }
+            IrInst::BuildObject { field_values, .. } => {
+                field_values.iter().copied().for_each(&mut visit);
+            }
+            IrInst::IndexGet { object, index, .. } => {
+                visit(*object);
+                visit(*index);
+            }
+            IrInst::IndexSet {
+                object,
+                index,
+                value,
+            } => {
+                visit(*object);
+                visit(*index);
+                visit(*value);
+            }
+            IrInst::ArrayLen { array, .. } | IrInst::ArrayPop { array, .. } => visit(*array),
+            IrInst::ArrayPush { array, value } => {
+                visit(*array);
+                visit(*value);
+            }
+            IrInst::ObjectGetConst { object, .. }
+            | IrInst::ObjectGetOrCreateConst { object, .. }
+            | IrInst::ObjectKeys { object, .. }
+            | IrInst::MemberLength { object, .. } => visit(*object),
+            IrInst::ObjectGet { object, key, .. }
+            | IrInst::ObjectGetOrCreate { object, key, .. } => {
+                visit(*object);
+                visit(*key);
+            }
+            IrInst::ObjectSet { object, key, value } => {
+                visit(*object);
+                visit(*key);
+                visit(*value);
+            }
+            IrInst::ObjectDelete { object, key } => {
+                visit(*object);
+                visit(*key);
+            }
+            IrInst::Return { value } => {
+                if let Some(value) = value {
+                    visit(*value);
+                }
+            }
+            IrInst::JumpIfFalse { cond, .. } => visit(*cond),
+            IrInst::Discard { instruction } => instruction.visit_uses(visit),
+            IrInst::Const { .. }
+            | IrInst::Null { .. }
+            | IrInst::LoadGlobal { .. }
+            | IrInst::IncGlobal { .. }
+            | IrInst::AddGlobal { .. }
+            | IrInst::IncLocal { .. }
+            | IrInst::AddLocal { .. }
+            | IrInst::AppendStringGlobal { .. }
+            | IrInst::LoadLocal { .. }
+            | IrInst::LoadUpvalue { .. }
+            | IrInst::MakeClosure { .. }
+            | IrInst::LoopIncLess { .. }
+            | IrInst::LoopStepLess { .. }
+            | IrInst::LoopIncLessLocal { .. }
+            | IrInst::LoopStepLessLocal { .. }
+            | IrInst::LoadPathCur { .. }
+            | IrInst::Jump { .. }
+            | IrInst::LessConstJumpIfFalse { .. }
+            | IrInst::ForInArrayHeader { .. }
+            | IrInst::ForInArrayNext { .. } => {}
+        }
+    }
+
     pub fn has_side_effects(&self) -> bool {
         matches!(
             self,
             IrInst::StoreGlobal { .. }
                 | IrInst::IncGlobal { .. }
                 | IrInst::AddGlobal { .. }
+                | IrInst::IncLocal { .. }
+                | IrInst::AddLocal { .. }
+                | IrInst::AppendStringGlobal { .. }
                 | IrInst::StoreLocal { .. }
                 | IrInst::StoreUpvalue { .. }
                 | IrInst::Print { .. }
@@ -355,6 +482,10 @@ impl IrInst {
                 | IrInst::ObjectDelete { .. }
                 | IrInst::Wait { .. }
                 | IrInst::StorePathCur { .. }
+                | IrInst::LoopIncLess { .. }
+                | IrInst::LoopStepLess { .. }
+                | IrInst::LoopIncLessLocal { .. }
+                | IrInst::LoopStepLessLocal { .. }
                 | IrInst::Return { .. }
                 | IrInst::Jump { .. }
                 | IrInst::JumpIfFalse { .. }
@@ -377,8 +508,12 @@ impl IrInst {
             | IrInst::LoadUpvalue { .. }
             | IrInst::StoreUpvalue { .. }
             | IrInst::IncGlobal { .. } => 1 + 4,
+            IrInst::IncLocal { .. } => 1 + 4,
             IrInst::AddGlobal { .. } => 1 + 4 + 8,
+            IrInst::AddLocal { .. } => 1 + 4 + 8,
+            IrInst::AppendStringGlobal { .. } => 1 + 4 + 4,
             IrInst::BinOp { .. } | IrInst::FoldedBinOp { .. } => 1,
+            IrInst::Discard { instruction } => instruction.lifted_byte_size(),
             IrInst::Not { .. } | IrInst::Print { .. } | IrInst::Pop { .. } => 1,
             IrInst::Input { .. } => 1 + 1,
             IrInst::Call { args, .. } => 1 + 4,
@@ -406,6 +541,8 @@ impl IrInst {
             IrInst::Wait { .. } => 1 + 1,
             IrInst::LoopIncLess { .. } => 1 + 4 + 8,
             IrInst::LoopStepLess { .. } => 1 + 4 + 8 + 8,
+            IrInst::LoopIncLessLocal { .. } => 1 + 4 + 8,
+            IrInst::LoopStepLessLocal { .. } => 1 + 4 + 8 + 8,
             IrInst::Jump { .. } | IrInst::JumpIfFalse { .. } => 1 + 4,
             IrInst::Return { .. } => 1,
             IrInst::LessConstJumpIfFalse { .. } => 1 + 4 + 8 + 4,

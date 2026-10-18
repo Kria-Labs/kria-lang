@@ -535,9 +535,9 @@ impl Compiler {
         self.emit_opcode(OP_JUMP);
         let skip_err = self.emit_u32(0);
         self.patch_u32(type_err, self.bytecode.code.len() as u32);
-        self.emit_constant(Value::String(Arc::from(
+        self.emit_constant(Value::String(crate::vm::StringValue::from(Arc::from(
             "for item in ... requires an array iterable",
-        )));
+        ))));
         self.emit_opcode(OP_PRINT);
         self.emit_opcode(OP_NULL);
         self.patch_u32(skip_err, self.bytecode.code.len() as u32);
@@ -640,9 +640,9 @@ impl Compiler {
         self.emit_opcode(OP_JUMP);
         let skip_err = self.emit_u32(0);
         self.patch_u32(type_err, self.bytecode.code.len() as u32);
-        self.emit_constant(Value::String(Arc::from(
+        self.emit_constant(Value::String(crate::vm::StringValue::from(Arc::from(
             "for key, value in ... requires an object iterable",
-        )));
+        ))));
         self.emit_opcode(OP_PRINT);
         self.emit_opcode(OP_NULL);
         self.patch_u32(skip_err, self.bytecode.code.len() as u32);
@@ -681,18 +681,41 @@ impl Compiler {
                                                 Expression::Literal(Literal::Number(n)),
                                                 Expression::Identifier(src),
                                             ) if src == cond_var => {
-                                                let idx = match self.resolve_identifier(cond_var)? {
-                                                    VarResolution::Global(index) => index,
-                                                    VarResolution::Local(_)
-                                                    | VarResolution::Upvalue(_) => return Ok(None),
-                                                };
+                                                let resolution =
+                                                    self.resolve_identifier(cond_var)?;
                                                 if *n == 1 {
-                                                    self.emit_opcode(OP_LOOP_INC_LESS);
-                                                    self.emit_u32(idx as u32);
+                                                    match resolution {
+                                                        VarResolution::Global(index) => {
+                                                            self.emit_opcode(OP_LOOP_INC_LESS);
+                                                            self.emit_u32(index as u32);
+                                                        }
+                                                        VarResolution::Local(index) => {
+                                                            self.emit_opcode(
+                                                                OP_LOOP_INC_LESS_LOCAL,
+                                                            );
+                                                            self.emit_u32(index as u32);
+                                                        }
+                                                        VarResolution::Upvalue(_) => {
+                                                            return Ok(None)
+                                                        }
+                                                    }
                                                     self.emit_i64(*limit);
                                                 } else {
-                                                    self.emit_opcode(OP_LOOP_STEP_LESS);
-                                                    self.emit_u32(idx as u32);
+                                                    match resolution {
+                                                        VarResolution::Global(index) => {
+                                                            self.emit_opcode(OP_LOOP_STEP_LESS);
+                                                            self.emit_u32(index as u32);
+                                                        }
+                                                        VarResolution::Local(index) => {
+                                                            self.emit_opcode(
+                                                                OP_LOOP_STEP_LESS_LOCAL,
+                                                            );
+                                                            self.emit_u32(index as u32);
+                                                        }
+                                                        VarResolution::Upvalue(_) => {
+                                                            return Ok(None)
+                                                        }
+                                                    }
                                                     self.emit_i64(*limit);
                                                     self.emit_i64(*n);
                                                 }
@@ -753,32 +776,78 @@ impl Compiler {
         name: &str,
         value: &Expression,
     ) -> Result<Option<()>, String> {
+        if let Expression::BinaryOp {
+            left,
+            op: BinaryOperator::Add,
+            right,
+        } = value
+        {
+            if matches!(&**left, Expression::Identifier(src) if src == name) {
+                if let Expression::Literal(Literal::String(suffix)) = &**right {
+                    if let VarResolution::Global(index) = self.resolve_identifier(name)? {
+                        let constant = self.bytecode.add_constant(Value::String(
+                            crate::vm::StringValue::from(Arc::<str>::from(suffix.as_str())),
+                        ));
+                        self.emit_opcode(OP_APPEND_STRING_GLOBAL);
+                        self.emit_u32(index as u32);
+                        self.emit_u32(constant);
+                        return Ok(Some(()));
+                    }
+                }
+            }
+        }
+
         match value {
             Expression::BinaryOp { left, op, right } => match (&**left, &**right) {
                 (Expression::Identifier(src), Expression::Literal(Literal::Number(n)))
                 | (Expression::Literal(Literal::Number(n)), Expression::Identifier(src))
                     if src == name =>
                 {
-                    let index = match self.resolve_identifier(name)? {
-                        VarResolution::Global(index) => index,
-                        VarResolution::Local(_) | VarResolution::Upvalue(_) => return Ok(None),
-                    };
+                    let resolution = self.resolve_identifier(name)?;
                     return match op {
                         BinaryOperator::Add => {
-                            if *n == 1 {
-                                self.emit_opcode(OP_INC_GLOBAL);
-                                self.emit_u32(index as u32);
-                            } else {
-                                self.emit_opcode(OP_ADD_GLOBAL);
-                                self.emit_u32(index as u32);
-                                self.emit_i64(*n);
+                            if matches!(&resolution, VarResolution::Local(_))
+                                && !matches!(&**left, Expression::Identifier(_))
+                            {
+                                return Ok(None);
+                            }
+                            match resolution {
+                                VarResolution::Global(index) => {
+                                    if *n == 1 {
+                                        self.emit_opcode(OP_INC_GLOBAL);
+                                        self.emit_u32(index as u32);
+                                    } else {
+                                        self.emit_opcode(OP_ADD_GLOBAL);
+                                        self.emit_u32(index as u32);
+                                        self.emit_i64(*n);
+                                    }
+                                }
+                                VarResolution::Local(index) => {
+                                    if *n == 1 {
+                                        self.emit_opcode(OP_INC_LOCAL);
+                                        self.emit_u32(index as u32);
+                                    } else {
+                                        self.emit_opcode(OP_ADD_LOCAL);
+                                        self.emit_u32(index as u32);
+                                        self.emit_i64(*n);
+                                    }
+                                }
+                                VarResolution::Upvalue(_) => return Ok(None),
                             }
                             Ok(Some(()))
                         }
                         BinaryOperator::Subtract => {
-                            if let Expression::Identifier(_) = &**left {
+                            if matches!(&**left, Expression::Identifier(_))
+                                && matches!(&resolution, VarResolution::Global(_))
+                            {
                                 if let Some(delta) = n.checked_neg() {
-                                    self.emit_opcode(OP_ADD_GLOBAL);
+                                    let (opcode, index) = match resolution {
+                                        VarResolution::Global(index) => (OP_ADD_GLOBAL, index),
+                                        VarResolution::Local(_) | VarResolution::Upvalue(_) => {
+                                            return Ok(None);
+                                        }
+                                    };
+                                    self.emit_opcode(opcode);
                                     self.emit_u32(index as u32);
                                     self.emit_i64(delta);
                                     Ok(Some(()))
@@ -816,16 +885,18 @@ impl Compiler {
                     self.emit_opcode(OP_BUILD_OBJECT);
                     self.emit_u32(fields.len() as u32);
                     for (key, _) in fields {
-                        let key_idx = self
-                            .bytecode
-                            .add_constant(Value::String(Arc::from(key.as_str())));
+                        let key_idx = self.bytecode.add_constant(Value::String(
+                            crate::vm::StringValue::from(Arc::from(key.as_str())),
+                        ));
                         self.emit_u32(key_idx);
                     }
                 }
                 _ => {
                     let val = match literal {
                         Literal::Number(n) => Value::Number(*n),
-                        Literal::String(s) => Value::String(Arc::from(s.as_str())),
+                        Literal::String(s) => {
+                            Value::String(crate::vm::StringValue::from(Arc::from(s.as_str())))
+                        }
                         Literal::Boolean(b) => Value::Boolean(*b),
                         Literal::Null => Value::Null,
                         Literal::Array { .. } | Literal::Object { .. } => unreachable!(),
@@ -953,9 +1024,11 @@ impl Compiler {
                 if member == "length" {
                     self.emit_opcode(OP_MEMBER_LENGTH);
                 } else {
-                    let key_idx = self
-                        .bytecode
-                        .add_constant(Value::String(Arc::from(member.as_str())));
+                    let key_idx =
+                        self.bytecode
+                            .add_constant(Value::String(crate::vm::StringValue::from(Arc::from(
+                                member.as_str(),
+                            ))));
                     self.emit_opcode(OP_OBJECT_GET_CONST);
                     self.emit_u32(key_idx);
                 }
@@ -1128,9 +1201,11 @@ impl Compiler {
             self.emit_u32(cur_idx as u32);
             match seg {
                 PathSegment::Dot(name) => {
-                    let key_idx = self
-                        .bytecode
-                        .add_constant(Value::String(Arc::from(name.as_str())));
+                    let key_idx =
+                        self.bytecode
+                            .add_constant(Value::String(crate::vm::StringValue::from(Arc::from(
+                                name.as_str(),
+                            ))));
                     self.emit_opcode(OP_OBJECT_GET_OR_CREATE_CONST);
                     self.emit_u32(key_idx);
                 }
@@ -1147,9 +1222,11 @@ impl Compiler {
         self.emit_u32(cur_idx as u32);
         match &segments[last] {
             PathSegment::Dot(name) => {
-                let key_idx = self
-                    .bytecode
-                    .add_constant(Value::String(Arc::from(name.as_str())));
+                let key_idx =
+                    self.bytecode
+                        .add_constant(Value::String(crate::vm::StringValue::from(Arc::from(
+                            name.as_str(),
+                        ))));
                 self.emit_opcode(OP_CONSTANT);
                 self.emit_u32(key_idx);
                 self.compile_expression(value)?;
@@ -1186,9 +1263,11 @@ impl Compiler {
             self.emit_u32(cur_idx as u32);
             match seg {
                 PathSegment::Dot(name) => {
-                    let key_idx = self
-                        .bytecode
-                        .add_constant(Value::String(Arc::from(name.as_str())));
+                    let key_idx =
+                        self.bytecode
+                            .add_constant(Value::String(crate::vm::StringValue::from(Arc::from(
+                                name.as_str(),
+                            ))));
                     self.emit_opcode(OP_OBJECT_GET_CONST);
                     self.emit_u32(key_idx);
                 }
@@ -1205,9 +1284,11 @@ impl Compiler {
         self.emit_u32(cur_idx as u32);
         match &segments[last] {
             PathSegment::Dot(name) => {
-                let key_idx = self
-                    .bytecode
-                    .add_constant(Value::String(Arc::from(name.as_str())));
+                let key_idx =
+                    self.bytecode
+                        .add_constant(Value::String(crate::vm::StringValue::from(Arc::from(
+                            name.as_str(),
+                        ))));
                 self.emit_opcode(OP_CONSTANT);
                 self.emit_u32(key_idx);
                 self.emit_opcode(OP_OBJECT_DELETE);
@@ -1262,6 +1343,38 @@ mod tests {
             "fn increment(n) {\n  set n = n + 1\n  return n\n}\nset result = increment(4)\nif (result != 5) {\n  print(1 / 0)\n}\nfn count(n) {\n  while (n < 3) {\n    set n = n + 1\n  }\n  return n\n}\nset count_result = count(0)\nif (count_result != 3) {\n  print(1 / 0)\n}",
         )
         .expect("local parameter increments and loop");
+    }
+
+    #[test]
+    fn local_counter_loop_uses_fused_instructions() {
+        let source = "fn count(n) {\n  while (n < 100) {\n    set n = n + 1\n  }\n  return n\n}\nset result = count(0)";
+        let tokens = Lexer::new(source).tokenize();
+        let statements = Parser::new(tokens).parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&statements).expect("compile");
+        let bytecode = compiler.finish_bytecode();
+        assert!(bytecode.code.contains(&OP_LOOP_INC_LESS_LOCAL));
+        run_source(source).expect("local fused loop");
+    }
+
+    #[test]
+    fn repeated_string_append_uses_fast_path_and_preserves_aliases() {
+        let source = "set text = \"a\"\nset alias = text\nset text = text + \"b\"\nif (text != \"ab\") {\n  print(1 / 0)\n}\nif (alias != \"a\") {\n  print(1 / 0)\n}";
+        let tokens = Lexer::new(source).tokenize();
+        let statements = Parser::new(tokens).parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&statements).expect("compile");
+        let bytecode = compiler.finish_bytecode();
+        assert!(bytecode.code.contains(&OP_APPEND_STRING_GLOBAL));
+        run_source(source).expect("append must preserve string value semantics");
+    }
+
+    #[test]
+    fn closure_upvalues_are_shared_between_calls() {
+        run_source(
+            "set make_counter = fn() {\n  set value = 0\n  return fn() {\n    set value = value + 1\n    return value\n  }\n}\nset counter = make_counter()\nif (counter() != 1) {\n  print(1 / 0)\n}\nif (counter() != 2) {\n  print(1 / 0)\n}",
+        )
+        .expect("captured value persists across closure calls");
     }
 
     #[test]

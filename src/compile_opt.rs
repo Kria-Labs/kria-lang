@@ -253,7 +253,7 @@ pub fn fold_binary_literal(
                 let mut s = String::with_capacity(l.len() + r.len());
                 s.push_str(l);
                 s.push_str(r);
-                Some(Value::String(Arc::from(s)))
+                Some(Value::String(crate::vm::StringValue::from(Arc::from(s))))
             }
             _ => None,
         };

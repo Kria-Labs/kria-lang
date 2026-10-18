@@ -1,9 +1,84 @@
 use crate::bytecode::*;
 use indexmap::IndexMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct StringValue(Arc<String>);
+
+impl StringValue {
+    fn new(value: impl Into<String>) -> Self {
+        Self(Arc::new(value.into()))
+    }
+
+    fn concat(left: &Self, right: &Self) -> Self {
+        let mut value = String::with_capacity(left.0.len() + right.0.len());
+        value.push_str(&left.0);
+        value.push_str(&right.0);
+        Self(Arc::new(value))
+    }
+
+    fn append(&mut self, suffix: &str) {
+        if let Some(value) = Arc::get_mut(&mut self.0) {
+            value.push_str(suffix);
+        } else {
+            let mut value = String::with_capacity(self.0.len() + suffix.len());
+            value.push_str(&self.0);
+            value.push_str(suffix);
+            self.0 = Arc::new(value);
+        }
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn to_arc_str(&self) -> Arc<str> {
+        Arc::from(self.0.as_str())
+    }
+}
+
+impl From<Arc<str>> for StringValue {
+    fn from(value: Arc<str>) -> Self {
+        Self::new(value.as_ref())
+    }
+}
+
+impl From<String> for StringValue {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for StringValue {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl PartialEq for StringValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl std::fmt::Debug for StringValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Display for StringValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum ArrayElements {
@@ -78,13 +153,13 @@ impl ArrayData {
 #[derive(Debug, Clone)]
 pub enum Value {
     Number(i64),
-    String(Arc<str>),
+    String(StringValue),
     Boolean(bool),
     Null,
     Function {
         bytecode_offset: usize,
         num_params: u32,
-        upvalues: Vec<Value>,
+        upvalues: Rc<RefCell<Vec<Value>>>,
     },
     Array(Rc<ArrayData>),
     Object(Rc<ObjectData>),
@@ -93,10 +168,11 @@ pub enum Value {
 #[derive(Debug, Clone)]
 pub struct ObjectData {
     pub fields: RefCell<IndexMap<Arc<str>, Value>>,
+    shape_version: Cell<u64>,
 }
 
-/// Monomorphic inline cache: (object ptr, const key index) -> field index in IndexMap.
-type ObjectGetCache = HashMap<(usize, u32), usize>;
+/// Monomorphic inline cache: (bytecode, instruction offset) -> object shape and field slot.
+type ObjectGetCache = HashMap<(usize, usize), (usize, u64, usize)>;
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
@@ -116,7 +192,7 @@ impl PartialEq for Value {
                     num_params: b_params,
                     upvalues: b_up,
                 },
-            ) => a_off == b_off && a_params == b_params && a_up == b_up,
+            ) => a_off == b_off && a_params == b_params && *a_up.borrow() == *b_up.borrow(),
             (Value::Array(a), Value::Array(b)) => arrays_equal(a, b),
             (Value::Object(a), Value::Object(b)) => objects_equal(a, b),
             _ => false,
@@ -161,7 +237,7 @@ impl std::fmt::Display for Value {
                     "<function at {:x}({} params, {} upvalues)>",
                     bytecode_offset,
                     num_params,
-                    upvalues.len()
+                    upvalues.borrow().len()
                 )
             }
             Value::Array(arr) => {
@@ -197,12 +273,13 @@ impl std::fmt::Display for Value {
 fn new_object() -> Value {
     Value::Object(Rc::new(ObjectData {
         fields: RefCell::new(IndexMap::new()),
+        shape_version: Cell::new(0),
     }))
 }
 
 fn value_to_string_key(key: Value) -> Result<Arc<str>, String> {
     match key {
-        Value::String(s) => Ok(s),
+        Value::String(s) => Ok(s.to_arc_str()),
         other => Err(format!("Object key must be a string, found {:?}", other)),
     }
 }
@@ -222,28 +299,30 @@ fn object_get(obj: &Value, key: &str) -> Value {
 fn object_get_const_cached(
     cache: &mut ObjectGetCache,
     obj: &Value,
-    key_idx: u32,
+    site: (usize, usize),
     key: &str,
 ) -> Value {
     match obj {
         Value::Null => Value::Null,
         Value::Object(o) => {
             let ptr = Rc::as_ptr(o) as usize;
-            let cache_key = (ptr, key_idx);
-            if let Some(&field_idx) = cache.get(&cache_key) {
-                let fields = o.fields.borrow();
-                if let Some((cached_key, value)) = fields.get_index(field_idx) {
-                    if cached_key.as_ref() == key {
-                        return value.clone();
+            let shape_version = o.shape_version.get();
+            if let Some(&(cached_ptr, cached_version, field_idx)) = cache.get(&site) {
+                if cached_ptr == ptr && cached_version == shape_version {
+                    let fields = o.fields.borrow();
+                    if let Some((cached_key, value)) = fields.get_index(field_idx) {
+                        if cached_key.as_ref() == key {
+                            return value.clone();
+                        }
                     }
                 }
-                cache.remove(&cache_key);
             }
             let fields = o.fields.borrow();
             if let Some((idx, _, v)) = fields.get_full(key) {
-                cache.insert(cache_key, idx);
+                cache.insert(site, (ptr, shape_version, idx));
                 v.clone()
             } else {
+                cache.remove(&site);
                 Value::Null
             }
         }
@@ -254,7 +333,11 @@ fn object_get_const_cached(
 fn object_set(obj: &Value, key: &str, value: Value) -> Result<(), String> {
     match obj {
         Value::Object(o) => {
-            o.fields.borrow_mut().insert(arc_key(key), value);
+            let mut fields = o.fields.borrow_mut();
+            if !fields.contains_key(key) {
+                o.shape_version.set(o.shape_version.get().wrapping_add(1));
+            }
+            fields.insert(arc_key(key), value);
             Ok(())
         }
         Value::Null => Err("Cannot set property on null".to_string()),
@@ -265,7 +348,11 @@ fn object_set(obj: &Value, key: &str, value: Value) -> Result<(), String> {
 fn object_set_arc(obj: &Value, key: Arc<str>, value: Value) -> Result<(), String> {
     match obj {
         Value::Object(o) => {
-            o.fields.borrow_mut().insert(key, value);
+            let mut fields = o.fields.borrow_mut();
+            if !fields.contains_key(key.as_ref()) {
+                o.shape_version.set(o.shape_version.get().wrapping_add(1));
+            }
+            fields.insert(key, value);
             Ok(())
         }
         Value::Null => Err("Cannot set property on null".to_string()),
@@ -290,6 +377,7 @@ fn object_get_or_create(obj: &Value, key: &str) -> Result<Value, String> {
             };
             if needs_new {
                 fields.insert(arc_key(key), new_object());
+                o.shape_version.set(o.shape_version.get().wrapping_add(1));
             }
             Ok(fields.get(key).unwrap().clone())
         }
@@ -301,7 +389,9 @@ fn object_get_or_create(obj: &Value, key: &str) -> Result<Value, String> {
 fn object_delete(obj: &Value, key: &str) -> Result<(), String> {
     match obj {
         Value::Object(o) => {
-            o.fields.borrow_mut().shift_remove(key);
+            if o.fields.borrow_mut().shift_remove(key).is_some() {
+                o.shape_version.set(o.shape_version.get().wrapping_add(1));
+            }
             Ok(())
         }
         Value::Null => Ok(()),
@@ -327,7 +417,7 @@ fn expect_array(val: Value) -> Result<Rc<ArrayData>, String> {
 pub struct CallFrame {
     return_addr: usize,
     locals_start: usize, // Index where local variables start in stack
-    upvalues: Vec<Value>,
+    upvalues: Rc<RefCell<Vec<Value>>>,
 }
 
 pub struct VM {
@@ -352,6 +442,27 @@ impl VM {
         self.stack
             .pop()
             .ok_or_else(|| "Stack underflow".to_string())
+    }
+
+    #[inline(always)]
+    fn pop2(&mut self) -> Result<(Value, Value), String> {
+        if self.stack.len() < 2 {
+            return Err("Stack underflow".to_string());
+        }
+        let right = self.stack.pop().expect("stack length checked");
+        let left = self.stack.pop().expect("stack length checked");
+        Ok((left, right))
+    }
+
+    #[inline(always)]
+    fn pop3(&mut self) -> Result<(Value, Value, Value), String> {
+        if self.stack.len() < 3 {
+            return Err("Stack underflow".to_string());
+        }
+        let third = self.stack.pop().expect("stack length checked");
+        let second = self.stack.pop().expect("stack length checked");
+        let first = self.stack.pop().expect("stack length checked");
+        Ok((first, second, third))
     }
 
     #[inline(always)]
@@ -384,6 +495,7 @@ impl VM {
         let mut ip = start_ip;
 
         while ip < code_len {
+            let instruction_ip = ip;
             let opcode = unsafe { *code.get_unchecked(ip) };
             ip += 1;
 
@@ -465,7 +577,7 @@ impl VM {
                                 let frame = parent_frame.ok_or_else(|| {
                                     "Closure capture requires active call frame".to_string()
                                 })?;
-                                frame.upvalues.get(index).cloned().ok_or_else(|| {
+                                frame.upvalues.borrow().get(index).cloned().ok_or_else(|| {
                                     "Closure upvalue capture out of bounds".to_string()
                                 })?
                             }
@@ -477,7 +589,7 @@ impl VM {
                     self.stack.push(Value::Function {
                         bytecode_offset: func_offset,
                         num_params,
-                        upvalues,
+                        upvalues: Rc::new(RefCell::new(upvalues)),
                     });
                 }
                 OP_CALL_FUNCTION => {
@@ -519,6 +631,7 @@ impl VM {
                     if let Some(frame) = self.call_stack.last() {
                         let val = frame
                             .upvalues
+                            .borrow()
                             .get(index)
                             .cloned()
                             .ok_or_else(|| "Upvalue index out of bounds".to_string())?;
@@ -533,8 +646,9 @@ impl VM {
                     let val = self.pop()?;
 
                     if let Some(frame) = self.call_stack.last_mut() {
-                        if index < frame.upvalues.len() {
-                            frame.upvalues[index] = val;
+                        let mut upvalues = frame.upvalues.borrow_mut();
+                        if index < upvalues.len() {
+                            upvalues[index] = val;
                         } else {
                             return Err("Upvalue index out of bounds".to_string());
                         }
@@ -582,6 +696,110 @@ impl VM {
                         }
                     } else {
                         return Err("LoopStepLess expects number".to_string());
+                    }
+                }
+                OP_LOOP_INC_LESS_LOCAL => {
+                    let offset = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let limit = unsafe { Bytecode::read_i64_unchecked(code, ip) };
+                    ip += 8;
+                    let loop_start = ip - 13;
+                    let frame = self
+                        .call_stack
+                        .last()
+                        .ok_or_else(|| "Local loop outside function context".to_string())?;
+                    let idx = frame.locals_start + offset;
+                    let Some(Value::Number(n)) = self.stack.get(idx) else {
+                        let value = self.stack.get(idx).cloned().unwrap_or(Value::Null);
+                        return Err(format!(
+                            "Less requires numbers, found {:?} and {:?}",
+                            value,
+                            Value::Number(limit)
+                        ));
+                    };
+                    let n = *n;
+                    if n < limit {
+                        self.stack[idx] = Value::Number(n + 1);
+                        ip = loop_start;
+                    }
+                }
+                OP_LOOP_STEP_LESS_LOCAL => {
+                    let offset = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let limit = unsafe { Bytecode::read_i64_unchecked(code, ip) };
+                    ip += 8;
+                    let step = unsafe { Bytecode::read_i64_unchecked(code, ip) };
+                    ip += 8;
+                    let loop_start = ip - 21;
+                    let frame = self
+                        .call_stack
+                        .last()
+                        .ok_or_else(|| "Local loop outside function context".to_string())?;
+                    let idx = frame.locals_start + offset;
+                    let Some(Value::Number(n)) = self.stack.get(idx) else {
+                        let value = self.stack.get(idx).cloned().unwrap_or(Value::Null);
+                        return Err(format!(
+                            "Less requires numbers, found {:?} and {:?}",
+                            value,
+                            Value::Number(limit)
+                        ));
+                    };
+                    let n = *n;
+                    if n < limit {
+                        self.stack[idx] = Value::Number(n + step);
+                        ip = loop_start;
+                    }
+                }
+                OP_INC_LOCAL | OP_ADD_LOCAL => {
+                    let offset = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let delta = if opcode == OP_INC_LOCAL {
+                        1
+                    } else {
+                        let delta = unsafe { Bytecode::read_i64_unchecked(code, ip) };
+                        ip += 8;
+                        delta
+                    };
+                    let frame = self
+                        .call_stack
+                        .last()
+                        .ok_or_else(|| "Local arithmetic outside function context".to_string())?;
+                    let idx = frame.locals_start + offset;
+                    let Some(value) = self.stack.get(idx) else {
+                        return Err("Local variable out of bounds".to_string());
+                    };
+                    let Value::Number(n) = value else {
+                        return Err(format!(
+                            "Add requires two numbers or two strings, found {:?} and {:?}",
+                            value,
+                            Value::Number(delta)
+                        ));
+                    };
+                    self.stack[idx] = Value::Number(*n + delta);
+                }
+                OP_APPEND_STRING_GLOBAL => {
+                    let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let suffix_idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
+                    ip += 4;
+                    let suffix_value = match constants.get(suffix_idx) {
+                        Some(value @ Value::String(_)) => value.clone(),
+                        _ => {
+                            return Err("String append suffix must be a string constant".to_string())
+                        }
+                    };
+                    let Value::String(suffix) = &suffix_value else {
+                        unreachable!()
+                    };
+                    match self.globals.get_mut(idx) {
+                        Some(Value::String(value)) => value.append(suffix.as_str()),
+                        Some(value) => {
+                            return Err(format!(
+                                "Add requires two numbers or two strings, found {:?} and {:?}",
+                                value, suffix_value
+                            ));
+                        }
+                        None => return Err("Global index out of bounds".to_string()),
                     }
                 }
                 OP_LESS_CONST_JUMP_IF_FALSE => {
@@ -673,17 +891,13 @@ impl VM {
                     self.stack.push(Value::Null);
                 }
                 OP_ADD => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Number(l + r));
                         }
                         (Value::String(l), Value::String(r)) => {
-                            let mut s = String::with_capacity(l.len() + r.len());
-                            s.push_str(&l);
-                            s.push_str(&r);
-                            self.stack.push(Value::String(Arc::from(s)));
+                            self.stack.push(Value::String(StringValue::concat(&l, &r)));
                         }
                         (l, r) => {
                             return Err(format!(
@@ -694,8 +908,7 @@ impl VM {
                     }
                 }
                 OP_SUBTRACT => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Number(l - r));
@@ -709,8 +922,7 @@ impl VM {
                     }
                 }
                 OP_MULTIPLY => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Number(l * r));
@@ -724,8 +936,7 @@ impl VM {
                     }
                 }
                 OP_DIVIDE => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             if r == 0 {
@@ -742,18 +953,15 @@ impl VM {
                     }
                 }
                 OP_EQUALS => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     self.stack.push(Value::Boolean(left == right));
                 }
                 OP_NOT_EQUALS => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     self.stack.push(Value::Boolean(left != right));
                 }
                 OP_GREATER => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l > r));
@@ -767,8 +975,7 @@ impl VM {
                     }
                 }
                 OP_LESS => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l < r));
@@ -779,8 +986,7 @@ impl VM {
                     }
                 }
                 OP_GREATER_EQUAL => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l >= r));
@@ -794,8 +1000,7 @@ impl VM {
                     }
                 }
                 OP_LESS_EQUAL => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l <= r));
@@ -809,8 +1014,7 @@ impl VM {
                     }
                 }
                 OP_AND => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Boolean(l), Value::Boolean(r)) => {
                             self.stack.push(Value::Boolean(l && r));
@@ -821,8 +1025,7 @@ impl VM {
                     }
                 }
                 OP_OR => {
-                    let right = self.pop()?;
-                    let left = self.pop()?;
+                    let (left, right) = self.pop2()?;
                     match (left, right) {
                         (Value::Boolean(l), Value::Boolean(r)) => {
                             self.stack.push(Value::Boolean(l || r));
@@ -870,8 +1073,7 @@ impl VM {
                     })));
                 }
                 OP_INDEX_GET => {
-                    let index_val = self.pop()?;
-                    let container = self.pop()?;
+                    let (container, index_val) = self.pop2()?;
                     match container {
                         Value::Array(arr) => {
                             let idx = index_to_usize(index_val)?;
@@ -890,9 +1092,7 @@ impl VM {
                     }
                 }
                 OP_INDEX_SET => {
-                    let value = self.pop()?;
-                    let index_val = self.pop()?;
-                    let container = self.pop()?;
+                    let (container, index_val, value) = self.pop3()?;
                     match container {
                         Value::Array(arr) => {
                             let idx = index_to_usize(index_val)?;
@@ -916,8 +1116,7 @@ impl VM {
                     self.stack.push(Value::Number(arr.len() as i64));
                 }
                 OP_ARRAY_PUSH => {
-                    let value = self.pop()?;
-                    let array_val = self.pop()?;
+                    let (array_val, value) = self.pop2()?;
                     let arr = expect_array(array_val)?;
                     arr.push(value)?;
                 }
@@ -943,46 +1142,43 @@ impl VM {
                     values.reverse();
                     for (i, key_idx) in keys.iter().enumerate() {
                         let key = match &constants[*key_idx] {
-                            Value::String(s) => Arc::clone(s),
+                            Value::String(s) => s.to_arc_str(),
                             _ => return Err("Object key must be a string constant".to_string()),
                         };
                         map.insert(key, values[i].clone());
                     }
                     self.stack.push(Value::Object(Rc::new(ObjectData {
                         fields: RefCell::new(map),
+                        shape_version: Cell::new(0),
                     })));
                 }
                 OP_OBJECT_GET_CONST => {
                     let key_idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as u32;
                     ip += 4;
                     let key = match &constants[key_idx as usize] {
-                        Value::String(s) => s.as_ref(),
+                        Value::String(s) => s.as_str(),
                         _ => return Err("Object key must be a string constant".to_string()),
                     };
                     let obj = self.pop()?;
                     self.stack.push(object_get_const_cached(
                         &mut self.object_get_cache,
                         &obj,
-                        key_idx,
+                        (code.as_ptr() as usize, instruction_ip),
                         key,
                     ));
                 }
                 OP_OBJECT_GET => {
-                    let key_val = self.pop()?;
-                    let obj = self.pop()?;
+                    let (obj, key_val) = self.pop2()?;
                     let key = value_to_string_key(key_val)?;
                     self.stack.push(object_get(&obj, &key));
                 }
                 OP_OBJECT_SET => {
-                    let value = self.pop()?;
-                    let key_val = self.pop()?;
-                    let obj = self.pop()?;
+                    let (obj, key_val, value) = self.pop3()?;
                     let key = value_to_string_key(key_val)?;
                     object_set(&obj, &key, value)?;
                 }
                 OP_OBJECT_DELETE => {
-                    let key_val = self.pop()?;
-                    let obj = self.pop()?;
+                    let (obj, key_val) = self.pop2()?;
                     let key = value_to_string_key(key_val)?;
                     object_delete(&obj, &key)?;
                 }
@@ -990,7 +1186,7 @@ impl VM {
                     let key_idx = Bytecode::read_u32(code, ip) as usize;
                     ip += 4;
                     let key = match &constants[key_idx] {
-                        Value::String(s) => s.as_ref(),
+                        Value::String(s) => s.as_str(),
                         _ => return Err("Object key must be a string constant".to_string()),
                     };
                     let obj = self.pop()?;
@@ -1048,7 +1244,7 @@ impl VM {
                             let fields = o.fields.borrow();
                             let keys: Vec<Value> = fields
                                 .keys()
-                                .map(|k| Value::String(Arc::clone(k)))
+                                .map(|k| Value::String(StringValue::from(Arc::clone(k))))
                                 .collect();
                             self.stack.push(Value::Array(Rc::new(ArrayData {
                                 mutable: true,
@@ -1081,13 +1277,9 @@ impl VM {
                     };
                     let arr_val = unsafe { self.global_unchecked(arr_g).clone() };
                     let arr = expect_array(arr_val)?;
-                    if i >= arr.len() {
-                        ip = exit;
-                    } else {
-                        let item = arr
-                            .get_cloned(i)
-                            .ok_or_else(|| format!("Array index {} out of bounds", i))?;
-                        self.stack.push(item);
+                    match arr.get_cloned(i) {
+                        Some(item) => self.stack.push(item),
+                        None => ip = exit,
                     }
                 }
                 OP_FOR_IN_ARRAY_NEXT => {
@@ -1153,7 +1345,7 @@ impl VM {
                         if has_str {
                             if trimmed.parse::<i64>().is_err() && trimmed.parse::<f64>().is_err() {
                                 // Pure string (non-numeric)
-                                break Value::String(Arc::from(trimmed));
+                                break Value::String(StringValue::from(trimmed));
                             }
                         }
 
@@ -1187,7 +1379,7 @@ impl VM {
                         Value::Array(_) => "array",
                         Value::Object(_) => "object",
                     };
-                    self.stack.push(Value::String(Arc::from(type_name)));
+                    self.stack.push(Value::String(StringValue::from(type_name)));
                 }
                 OP_WAIT => {
                     let val = self.pop()?;
@@ -1229,15 +1421,63 @@ mod tests {
 
         let mut cache = ObjectGetCache::new();
         assert_eq!(
-            object_get_const_cached(&mut cache, &object, 7, "b"),
+            object_get_const_cached(&mut cache, &object, (0, 7), "b"),
             Value::Number(2)
         );
         object_delete(&object, "a").unwrap();
 
         assert_eq!(
-            object_get_const_cached(&mut cache, &object, 7, "b"),
+            object_get_const_cached(&mut cache, &object, (0, 7), "b"),
             Value::Number(2)
         );
+    }
+
+    #[test]
+    fn property_cache_tracks_shape_and_instruction_site() {
+        let object = new_object();
+        object_set(&object, "a", Value::Number(1)).unwrap();
+        let mut cache = ObjectGetCache::new();
+        assert_eq!(
+            object_get_const_cached(&mut cache, &object, (10, 3), "a"),
+            Value::Number(1)
+        );
+
+        object_set(&object, "b", Value::Number(2)).unwrap();
+        assert_eq!(
+            object_get_const_cached(&mut cache, &object, (10, 3), "a"),
+            Value::Number(1)
+        );
+        object_delete(&object, "a").unwrap();
+        assert_eq!(
+            object_get_const_cached(&mut cache, &object, (10, 3), "a"),
+            Value::Null
+        );
+        assert_eq!(
+            object_get_const_cached(&mut cache, &object, (10, 4), "b"),
+            Value::Number(2)
+        );
+    }
+
+    #[test]
+    fn string_append_fast_path_preserves_shared_values() {
+        let original = StringValue::from("before");
+        let mut vm = VM::new();
+        vm.globals = vec![Value::String(original.clone()), Value::String(original)];
+        let mut bytecode = Bytecode::new();
+        bytecode.num_globals = 2;
+        bytecode
+            .constants
+            .push(Value::String(StringValue::from(" after")));
+        bytecode.emit_byte(OP_APPEND_STRING_GLOBAL);
+        bytecode.emit_u32(0);
+        bytecode.emit_u32(0);
+
+        vm.execute(&bytecode).expect("append");
+        assert_eq!(
+            vm.globals[0],
+            Value::String(StringValue::from("before after"))
+        );
+        assert_eq!(vm.globals[1], Value::String(StringValue::from("before")));
     }
 
     #[test]

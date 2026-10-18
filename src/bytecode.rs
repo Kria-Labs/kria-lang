@@ -56,6 +56,11 @@ pub const OP_FOR_IN_ARRAY_NEXT: u8 = 51; // i_g, loop_start
 pub const OP_LOOP_STEP_LESS: u8 = 52; // idx, limit, step — fused counter loop
 pub const OP_TYPE: u8 = 53; // Pop value, push type name string
 pub const OP_WAIT: u8 = 54; // Pop ms (number), sleep
+pub const OP_INC_LOCAL: u8 = 55;
+pub const OP_ADD_LOCAL: u8 = 56; // slot, delta
+pub const OP_LOOP_INC_LESS_LOCAL: u8 = 57; // slot, limit — fused counter loop
+pub const OP_LOOP_STEP_LESS_LOCAL: u8 = 58; // slot, limit, step
+pub const OP_APPEND_STRING_GLOBAL: u8 = 59; // global slot, suffix constant
 
 pub const CAPTURE_LOCAL: u8 = 0;
 pub const CAPTURE_UPVALUE: u8 = 1;

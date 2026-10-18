@@ -99,7 +99,8 @@ Source (.krx) → Lexer → Parser → Compiler → Bytecode → Stack VM
 ```
 
 - Flat bytecode, constant pool, call frames for functions
-- Hot-loop optimizations (`OP_LOOP_INC_LESS`, combined global ops)
+- Hot-loop optimizations for global and local counters, plus specialized global string appends
+- Monomorphic object-property caches, shared closure environments, and IR/bytecode cleanup passes
 - Implementation: [`src/`](src/) (`lexer`, `parser`, `compiler`, `vm`, `repl`, `modules`, `project`)
 
 ---

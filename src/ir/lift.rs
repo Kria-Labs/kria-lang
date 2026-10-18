@@ -176,6 +176,20 @@ fn lift_one(
             let delta = read_i64(bytecode, ip);
             IrInst::AddGlobal { slot, delta }
         }
+        OP_INC_LOCAL => {
+            let slot = read_u32(bytecode, ip);
+            IrInst::IncLocal { slot }
+        }
+        OP_ADD_LOCAL => {
+            let slot = read_u32(bytecode, ip);
+            let delta = read_i64(bytecode, ip);
+            IrInst::AddLocal { slot, delta }
+        }
+        OP_APPEND_STRING_GLOBAL => {
+            let slot = read_u32(bytecode, ip);
+            let suffix_idx = read_u32(bytecode, ip);
+            IrInst::AppendStringGlobal { slot, suffix_idx }
+        }
         OP_LOAD_LOCAL => {
             let slot = read_u32(bytecode, ip);
             let r = ctx.fresh();
@@ -241,8 +255,11 @@ fn lift_one(
         }
         OP_JUMP_IF_FALSE => {
             let target = read_u32(bytecode, ip);
-            let _cond = ctx.pop();
-            IrInst::JumpIfFalse { target_ip: target }
+            let cond = ctx.pop();
+            IrInst::JumpIfFalse {
+                cond,
+                target_ip: target,
+            }
         }
         OP_MAKE_CLOSURE => {
             let func_offset = read_u32(bytecode, ip);
@@ -522,6 +539,17 @@ fn lift_one(
                 step,
             }
         }
+        OP_LOOP_INC_LESS_LOCAL => {
+            let slot = read_u32(bytecode, ip);
+            let limit = read_i64(bytecode, ip);
+            IrInst::LoopIncLessLocal { slot, limit }
+        }
+        OP_LOOP_STEP_LESS_LOCAL => {
+            let slot = read_u32(bytecode, ip);
+            let limit = read_i64(bytecode, ip);
+            let step = read_i64(bytecode, ip);
+            IrInst::LoopStepLessLocal { slot, limit, step }
+        }
         OP_LESS_CONST_JUMP_IF_FALSE => {
             let slot = read_u32(bytecode, ip);
             let limit = read_i64(bytecode, ip);
@@ -615,12 +643,12 @@ fn next_insn_start(bytecode: &Bytecode, ip: usize) -> usize {
     let mut next = ip + 1;
     match op {
         OP_CONSTANT | OP_LOAD_GLOBAL | OP_STORE_GLOBAL | OP_LOAD_LOCAL | OP_STORE_LOCAL
-        | OP_LOAD_UPVALUE | OP_STORE_UPVALUE | OP_INC_GLOBAL | OP_JUMP | OP_JUMP_IF_FALSE => {
-            next += 4
-        }
-        OP_ADD_GLOBAL => next += 4 + 8,
-        OP_LOOP_INC_LESS => next += 4 + 8,
-        OP_LOOP_STEP_LESS => next += 4 + 8 + 8,
+        | OP_LOAD_UPVALUE | OP_STORE_UPVALUE | OP_INC_GLOBAL | OP_INC_LOCAL | OP_JUMP
+        | OP_JUMP_IF_FALSE => next += 4,
+        OP_ADD_GLOBAL | OP_ADD_LOCAL => next += 4 + 8,
+        OP_APPEND_STRING_GLOBAL => next += 4 + 4,
+        OP_LOOP_INC_LESS | OP_LOOP_INC_LESS_LOCAL => next += 4 + 8,
+        OP_LOOP_STEP_LESS | OP_LOOP_STEP_LESS_LOCAL => next += 4 + 8 + 8,
         OP_LESS_CONST_JUMP_IF_FALSE => next += 4 + 8 + 4,
         OP_MAKE_CLOSURE => {
             let func_offset = read_u32_at(bytecode, next);
