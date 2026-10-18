@@ -8,10 +8,7 @@ mod tests {
     #[test]
     fn ir_module_roundtrip_const_add() {
         let mut module = IrModule::new();
-        module.constants = vec![
-            crate::vm::Value::Number(1),
-            crate::vm::Value::Number(2),
-        ];
+        module.constants = vec![crate::vm::Value::Number(1), crate::vm::Value::Number(2)];
         let entry = module.entry_function_mut();
         let block = entry.entry;
         entry.block_mut(block).insts = vec![
@@ -29,9 +26,7 @@ mod tests {
                 left: ValueId(0),
                 right: ValueId(1),
             },
-            IrInst::Print {
-                value: ValueId(2),
-            },
+            IrInst::Print { value: ValueId(2) },
         ];
         run_ir_passes(&mut module);
         let bc = emit_module(&module);

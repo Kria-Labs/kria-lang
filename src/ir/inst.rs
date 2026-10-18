@@ -118,6 +118,11 @@ pub enum IrInst {
         left: ValueId,
         right: ValueId,
     },
+    /// Folded result; emission still consumes both bytecode operands.
+    FoldedBinOp {
+        result: ValueId,
+        idx: u32,
+    },
     Not {
         result: ValueId,
         value: ValueId,
@@ -309,6 +314,7 @@ impl IrInst {
             | IrInst::LoadLocal { result, .. }
             | IrInst::LoadUpvalue { result, .. }
             | IrInst::BinOp { result, .. }
+            | IrInst::FoldedBinOp { result, .. }
             | IrInst::Not { result, .. }
             | IrInst::Input { result, .. }
             | IrInst::Call { result, .. }
@@ -372,7 +378,7 @@ impl IrInst {
             | IrInst::StoreUpvalue { .. }
             | IrInst::IncGlobal { .. } => 1 + 4,
             IrInst::AddGlobal { .. } => 1 + 4 + 8,
-            IrInst::BinOp { .. } => 1,
+            IrInst::BinOp { .. } | IrInst::FoldedBinOp { .. } => 1,
             IrInst::Not { .. } | IrInst::Print { .. } | IrInst::Pop { .. } => 1,
             IrInst::Input { .. } => 1 + 1,
             IrInst::Call { args, .. } => 1 + 4,
@@ -395,8 +401,7 @@ impl IrInst {
             | IrInst::IsObject { .. }
             | IrInst::MemberLength { .. }
             | IrInst::Type { .. } => 1,
-            IrInst::ObjectGetConst { .. }
-            | IrInst::ObjectGetOrCreateConst { .. } => 1 + 4,
+            IrInst::ObjectGetConst { .. } | IrInst::ObjectGetOrCreateConst { .. } => 1 + 4,
             IrInst::ArrayPush { .. } => 1 + 1,
             IrInst::Wait { .. } => 1 + 1,
             IrInst::LoopIncLess { .. } => 1 + 4 + 8,

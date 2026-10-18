@@ -23,7 +23,10 @@ pub fn load_module_graph(entry: &Path) -> Result<ModuleGraph, String> {
         .map_err(|e| format!("Cannot resolve entry file '{}': {}", entry.display(), e))?;
 
     if entry.extension().and_then(|e| e.to_str()) != Some("krx") {
-        return Err(format!("Entry file must be a .krx file: {}", entry.display()));
+        return Err(format!(
+            "Entry file must be a .krx file: {}",
+            entry.display()
+        ));
     }
 
     let mut loaded: HashMap<PathBuf, Vec<Statement>> = HashMap::new();
@@ -45,7 +48,10 @@ pub fn load_module_graph(entry: &Path) -> Result<ModuleGraph, String> {
         }
 
         if visiting.contains(&path) {
-            return Err(format!("Circular import detected involving {}", path.display()));
+            return Err(format!(
+                "Circular import detected involving {}",
+                path.display()
+            ));
         }
 
         visiting.insert(path.clone());
@@ -59,7 +65,10 @@ pub fn load_module_graph(entry: &Path) -> Result<ModuleGraph, String> {
         let statements = parser.parse()?;
 
         for stmt in &statements {
-            if let Statement::Import { path: import_path, .. } = stmt {
+            if let Statement::Import {
+                path: import_path, ..
+            } = stmt
+            {
                 let resolved = resolve_import_path(&path, import_path)?;
                 visit(&resolved, loaded, order, visiting)?;
             }

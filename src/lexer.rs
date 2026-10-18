@@ -22,12 +22,12 @@ pub enum Token {
     Import,
     Export,
     From,
-    
+
     // Identifiers and Literals
     Identifier(String),
     Number(i64),
     String(String),
-    
+
     // Operators
     Plus,
     Minus,
@@ -44,7 +44,7 @@ pub enum Token {
     Or,
     Not,
     Pipe,
-    
+
     // Delimiters
     LParen,
     RParen,
@@ -57,7 +57,7 @@ pub enum Token {
     Comma,
     Colon,
     Newline,
-    
+
     // Special
     Eof,
 }
@@ -79,20 +79,20 @@ impl<'a> Lexer<'a> {
             peeked,
         }
     }
-    
+
     fn current_char(&self) -> Option<char> {
         self.current
     }
-    
+
     fn peek_char(&self) -> Option<char> {
         self.peeked
     }
-    
+
     fn advance(&mut self) {
         self.current = self.input.next();
         self.peeked = self.input.peek().copied();
     }
-    
+
     fn skip_spaces(&mut self) {
         while let Some(ch) = self.current_char() {
             if ch.is_whitespace() && ch != '\n' {
@@ -102,7 +102,7 @@ impl<'a> Lexer<'a> {
             }
         }
     }
-    
+
     fn push_escape_char(&mut self, result: &mut String) {
         self.advance();
         if let Some(escaped) = self.current_char() {
@@ -181,10 +181,10 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
     }
-    
+
     fn read_number(&mut self) -> i64 {
         let mut result = String::new();
-        
+
         while let Some(ch) = self.current_char() {
             if ch.is_ascii_digit() {
                 result.push(ch);
@@ -193,13 +193,13 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        
+
         result.parse::<i64>().unwrap_or(0)
     }
-    
+
     fn read_identifier(&mut self) -> String {
         let mut result = String::new();
-        
+
         while let Some(ch) = self.current_char() {
             if ch.is_alphanumeric() || ch == '_' {
                 result.push(ch);
@@ -208,189 +208,187 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        
+
         result
     }
-    
+
     pub fn next_token(&mut self) -> Token {
         loop {
             self.skip_spaces();
 
             match self.current_char() {
                 None => return Token::Eof,
-                Some(ch) => {
-                    match ch {
-                        '+' => {
+                Some(ch) => match ch {
+                    '+' => {
+                        self.advance();
+                        return Token::Plus;
+                    }
+                    '-' => {
+                        self.advance();
+                        return Token::Minus;
+                    }
+                    '*' => {
+                        self.advance();
+                        return Token::Star;
+                    }
+                    '/' => {
+                        if self.peek_char() == Some('/') {
                             self.advance();
-                            return Token::Plus;
-                        }
-                        '-' => {
                             self.advance();
-                            return Token::Minus;
-                        }
-                        '*' => {
-                            self.advance();
-                            return Token::Star;
-                        }
-                        '/' => {
-                            if self.peek_char() == Some('/') {
-                                self.advance();
-                                self.advance();
-                                while let Some(ch) = self.current_char() {
-                                    if ch == '\n' {
-                                        break;
-                                    }
-                                    self.advance();
+                            while let Some(ch) = self.current_char() {
+                                if ch == '\n' {
+                                    break;
                                 }
-                                continue;
-                            } else if self.peek_char() == Some('*') {
-                                self.skip_block_comment();
-                                continue;
-                            } else {
                                 self.advance();
-                                return Token::Slash;
                             }
-                        }
-                        '(' => {
+                            continue;
+                        } else if self.peek_char() == Some('*') {
+                            self.skip_block_comment();
+                            continue;
+                        } else {
                             self.advance();
-                            return Token::LParen;
+                            return Token::Slash;
                         }
-                        ')' => {
+                    }
+                    '(' => {
+                        self.advance();
+                        return Token::LParen;
+                    }
+                    ')' => {
+                        self.advance();
+                        return Token::RParen;
+                    }
+                    '=' => {
+                        if self.peek_char() == Some('=') {
                             self.advance();
-                            return Token::RParen;
-                        }
-                        '=' => {
-                            if self.peek_char() == Some('=') {
-                                self.advance();
-                                self.advance();
-                                return Token::EqualEqual;
-                            } else {
-                                self.advance();
-                                return Token::Equal;
-                            }
-                        }
-                        '!' => {
                             self.advance();
-                            if self.current_char() == Some('=') {
-                                self.advance();
-                                return Token::NotEqual;
-                            } else {
-                                return Token::Not;
-                            }
-                        }
-                        '>' => {
+                            return Token::EqualEqual;
+                        } else {
                             self.advance();
-                            if self.current_char() == Some('=') {
-                                self.advance();
-                                return Token::GreaterEqual;
-                            } else {
-                                return Token::Greater;
-                            }
+                            return Token::Equal;
                         }
-                        '<' => {
+                    }
+                    '!' => {
+                        self.advance();
+                        if self.current_char() == Some('=') {
                             self.advance();
-                            if self.current_char() == Some('=') {
-                                self.advance();
-                                return Token::LessEqual;
-                            } else {
-                                return Token::Less;
-                            }
+                            return Token::NotEqual;
+                        } else {
+                            return Token::Not;
                         }
-                        '{' => {
+                    }
+                    '>' => {
+                        self.advance();
+                        if self.current_char() == Some('=') {
                             self.advance();
-                            return Token::LBrace;
+                            return Token::GreaterEqual;
+                        } else {
+                            return Token::Greater;
                         }
-                        '}' => {
+                    }
+                    '<' => {
+                        self.advance();
+                        if self.current_char() == Some('=') {
                             self.advance();
-                            return Token::RBrace;
+                            return Token::LessEqual;
+                        } else {
+                            return Token::Less;
                         }
-                        '[' => {
+                    }
+                    '{' => {
+                        self.advance();
+                        return Token::LBrace;
+                    }
+                    '}' => {
+                        self.advance();
+                        return Token::RBrace;
+                    }
+                    '[' => {
+                        self.advance();
+                        return Token::LBracket;
+                    }
+                    ']' => {
+                        self.advance();
+                        return Token::RBracket;
+                    }
+                    '#' => {
+                        self.advance();
+                        return Token::Hash;
+                    }
+                    '.' => {
+                        self.advance();
+                        return Token::Dot;
+                    }
+                    ',' => {
+                        self.advance();
+                        return Token::Comma;
+                    }
+                    ':' => {
+                        self.advance();
+                        return Token::Colon;
+                    }
+                    '|' => {
+                        self.advance();
+                        return Token::Pipe;
+                    }
+                    '\n' => {
+                        self.advance();
+                        return Token::Newline;
+                    }
+                    '"' => {
+                        if self.peek_char() == Some('"') {
                             self.advance();
-                            return Token::LBracket;
-                        }
-                        ']' => {
-                            self.advance();
-                            return Token::RBracket;
-                        }
-                        '#' => {
-                            self.advance();
-                            return Token::Hash;
-                        }
-                        '.' => {
-                            self.advance();
-                            return Token::Dot;
-                        }
-                        ',' => {
-                            self.advance();
-                            return Token::Comma;
-                        }
-                        ':' => {
-                            self.advance();
-                            return Token::Colon;
-                        }
-                        '|' => {
-                            self.advance();
-                            return Token::Pipe;
-                        }
-                        '\n' => {
-                            self.advance();
-                            return Token::Newline;
-                        }
-                        '"' => {
-                            if self.peek_char() == Some('"') {
+                            if self.current_char() == Some('"') {
                                 self.advance();
                                 if self.current_char() == Some('"') {
                                     self.advance();
-                                    if self.current_char() == Some('"') {
-                                        self.advance();
-                                        return Token::String(self.read_triple_string());
-                                    }
-                                    return Token::String(String::new());
+                                    return Token::String(self.read_triple_string());
                                 }
+                                return Token::String(String::new());
                             }
-                            return Token::String(self.read_string());
                         }
-                        _ if ch.is_ascii_digit() => return Token::Number(self.read_number()),
-                        _ if ch.is_alphabetic() || ch == '_' => {
-                            let ident = self.read_identifier();
-                            return match ident.as_str() {
-                                "set" => Token::Set,
-                                "if" => Token::If,
-                                "else" => Token::Else,
-                                "elseif" => Token::ElseIf,
-                                "while" => Token::While,
-                                "for" => Token::For,
-                                "in" => Token::In,
-                                "fn" => Token::Fn,
-                                "return" => Token::Return,
-                                "true" => Token::True,
-                                "false" => Token::False,
-                                "null" => Token::Null,
-                                "print" => Token::Print,
-                                "and" => Token::And,
-                                "or" => Token::Or,
-                                "not" => Token::Not,
-                                "break" => Token::Break,
-                                "continue" => Token::Continue,
-                                "import" => Token::Import,
-                                "export" => Token::Export,
-                                "from" => Token::From,
-                                _ => Token::Identifier(ident),
-                            };
-                        }
-                        _ => {
-                            self.advance();
-                            continue;
-                        }
+                        return Token::String(self.read_string());
                     }
-                }
+                    _ if ch.is_ascii_digit() => return Token::Number(self.read_number()),
+                    _ if ch.is_alphabetic() || ch == '_' => {
+                        let ident = self.read_identifier();
+                        return match ident.as_str() {
+                            "set" => Token::Set,
+                            "if" => Token::If,
+                            "else" => Token::Else,
+                            "elseif" => Token::ElseIf,
+                            "while" => Token::While,
+                            "for" => Token::For,
+                            "in" => Token::In,
+                            "fn" => Token::Fn,
+                            "return" => Token::Return,
+                            "true" => Token::True,
+                            "false" => Token::False,
+                            "null" => Token::Null,
+                            "print" => Token::Print,
+                            "and" => Token::And,
+                            "or" => Token::Or,
+                            "not" => Token::Not,
+                            "break" => Token::Break,
+                            "continue" => Token::Continue,
+                            "import" => Token::Import,
+                            "export" => Token::Export,
+                            "from" => Token::From,
+                            _ => Token::Identifier(ident),
+                        };
+                    }
+                    _ => {
+                        self.advance();
+                        continue;
+                    }
+                },
             }
         }
     }
-    
+
     pub fn tokenize(&mut self) -> Vec<Token> {
         let mut tokens = Vec::new();
-        
+
         loop {
             let token = self.next_token();
             if token == Token::Eof {
@@ -399,7 +397,7 @@ impl<'a> Lexer<'a> {
             }
             tokens.push(token);
         }
-        
+
         tokens
     }
 }

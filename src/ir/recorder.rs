@@ -140,7 +140,10 @@ impl IrRecorder {
     pub fn emit_not(&mut self) {
         let v = self.stack.pop().expect("not");
         let r = self.fresh();
-        self.push_inst(IrInst::Not { result: r, value: v });
+        self.push_inst(IrInst::Not {
+            result: r,
+            value: v,
+        });
     }
 
     pub fn emit_print(&mut self) {
@@ -190,19 +193,23 @@ impl IrRecorder {
         num_params: u32,
         captures: &[CaptureDesc],
     ) {
-        let func_id = self.func_offsets.get(&func_offset).copied().unwrap_or_else(|| {
-            let id = FunctionId(self.module.functions.len() as u32);
-            let params: Vec<IrParam> = (0..num_params)
-                .map(|i| IrParam {
-                    name: format!("p{}", i),
-                    local_index: i,
-                })
-                .collect();
-            self.module.functions.push(IrFunction::new(None, params));
-            self.module.functions[id.0 as usize].captures = captures.to_vec();
-            self.func_offsets.insert(func_offset, id);
-            id
-        });
+        let func_id = self
+            .func_offsets
+            .get(&func_offset)
+            .copied()
+            .unwrap_or_else(|| {
+                let id = FunctionId(self.module.functions.len() as u32);
+                let params: Vec<IrParam> = (0..num_params)
+                    .map(|i| IrParam {
+                        name: format!("p{}", i),
+                        local_index: i,
+                    })
+                    .collect();
+                self.module.functions.push(IrFunction::new(None, params));
+                self.module.functions[id.0 as usize].captures = captures.to_vec();
+                self.func_offsets.insert(func_offset, id);
+                id
+            });
         let r = self.fresh();
         self.push_inst(IrInst::MakeClosure {
             result: r,
@@ -304,7 +311,10 @@ impl IrRecorder {
     pub fn emit_type(&mut self) {
         let v = self.stack.pop().expect("type");
         let r = self.fresh();
-        self.push_inst(IrInst::Type { result: r, value: v });
+        self.push_inst(IrInst::Type {
+            result: r,
+            value: v,
+        });
     }
 
     pub fn emit_wait(&mut self) {
@@ -317,7 +327,10 @@ impl IrRecorder {
     pub fn emit_array_push(&mut self) {
         let val = self.stack.pop().expect("push val");
         let arr = self.stack.pop().expect("push arr");
-        self.push_inst(IrInst::ArrayPush { array: arr, value: val });
+        self.push_inst(IrInst::ArrayPush {
+            array: arr,
+            value: val,
+        });
         let r = self.fresh();
         self.push_inst(IrInst::Null { result: r });
     }
@@ -325,7 +338,10 @@ impl IrRecorder {
     pub fn emit_array_pop(&mut self) {
         let arr = self.stack.pop().expect("pop arr");
         let r = self.fresh();
-        self.push_inst(IrInst::ArrayPop { result: r, array: arr });
+        self.push_inst(IrInst::ArrayPop {
+            result: r,
+            array: arr,
+        });
     }
 
     pub fn emit_object_get_const(&mut self, key_idx: u32) {
@@ -341,7 +357,10 @@ impl IrRecorder {
     pub fn emit_member_length(&mut self) {
         let obj = self.stack.pop().expect("length");
         let r = self.fresh();
-        self.push_inst(IrInst::MemberLength { result: r, object: obj });
+        self.push_inst(IrInst::MemberLength {
+            result: r,
+            object: obj,
+        });
     }
 
     pub fn emit_object_set(&mut self) {
@@ -364,19 +383,28 @@ impl IrRecorder {
     pub fn emit_object_keys(&mut self) {
         let obj = self.stack.pop().expect("keys");
         let r = self.fresh();
-        self.push_inst(IrInst::ObjectKeys { result: r, object: obj });
+        self.push_inst(IrInst::ObjectKeys {
+            result: r,
+            object: obj,
+        });
     }
 
     pub fn emit_is_array(&mut self) {
         let v = self.stack.pop().expect("is array");
         let r = self.fresh();
-        self.push_inst(IrInst::IsArray { result: r, value: v });
+        self.push_inst(IrInst::IsArray {
+            result: r,
+            value: v,
+        });
     }
 
     pub fn emit_is_object(&mut self) {
         let v = self.stack.pop().expect("is object");
         let r = self.fresh();
-        self.push_inst(IrInst::IsObject { result: r, value: v });
+        self.push_inst(IrInst::IsObject {
+            result: r,
+            value: v,
+        });
     }
 
     pub fn emit_path_cur_store(&mut self, slot: u32) {
@@ -429,7 +457,10 @@ impl IrRecorder {
     pub fn emit_array_len(&mut self) {
         let arr = self.stack.pop().expect("len");
         let r = self.fresh();
-        self.push_inst(IrInst::ArrayLen { result: r, array: arr });
+        self.push_inst(IrInst::ArrayLen {
+            result: r,
+            array: arr,
+        });
     }
 
     pub fn record_function_offset(&mut self, offset: u32, func_id: FunctionId) {

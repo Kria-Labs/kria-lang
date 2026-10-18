@@ -82,6 +82,12 @@ impl IrEmitter {
                 };
                 self.bytecode.emit_byte(opcode);
             }
+            IrInst::FoldedBinOp { idx, .. } => {
+                self.bytecode.emit_byte(OP_POP);
+                self.bytecode.emit_byte(OP_POP);
+                self.bytecode.emit_byte(OP_CONSTANT);
+                self.bytecode.emit_u32(*idx);
+            }
             IrInst::Not { .. } => {
                 self.bytecode.emit_byte(OP_NOT);
             }
@@ -100,12 +106,18 @@ impl IrEmitter {
                 self.bytecode.emit_u32(args.len() as u32);
             }
             IrInst::MakeClosure { func, .. } => self.emit_make_closure(*func, module),
-            IrInst::BuildArray { elements, mutable, .. } => {
+            IrInst::BuildArray {
+                elements, mutable, ..
+            } => {
                 self.bytecode.emit_byte(OP_BUILD_ARRAY);
                 self.bytecode.emit_u32(elements.len() as u32);
                 self.bytecode.emit_byte(if *mutable { 1 } else { 0 });
             }
-            IrInst::BuildObject { field_values, field_keys, .. } => {
+            IrInst::BuildObject {
+                field_values,
+                field_keys,
+                ..
+            } => {
                 self.bytecode.emit_byte(OP_BUILD_OBJECT);
                 self.bytecode.emit_u32(field_values.len() as u32);
                 for k in field_keys {
@@ -208,7 +220,8 @@ impl IrEmitter {
             let offset = self.bytecode.code.len() as u32;
             self.function_offsets.insert(func_id, offset);
             self.emit_function_linear(&module.functions[func_id.0 as usize], module);
-            self.bytecode.patch_u32(skip, self.bytecode.code.len() as u32);
+            self.bytecode
+                .patch_u32(skip, self.bytecode.code.len() as u32);
             self.emitted_functions.insert(func_id);
         }
         let func = &module.functions[func_id.0 as usize];
@@ -234,7 +247,11 @@ impl IrEmitter {
                 if i == 0 {
                     func.lift_start
                 } else {
-                    block.inst_ips.get(i - 1).copied().unwrap_or(func.lift_start)
+                    block
+                        .inst_ips
+                        .get(i - 1)
+                        .copied()
+                        .unwrap_or(func.lift_start)
                         + block.insts[i - 1].lifted_byte_size_with(module) as u32
                 }
             });
@@ -294,9 +311,10 @@ impl IrEmitter {
         }
 
         for (pos, old_target) in fixups {
-            let new_target = ip_map.get(&old_target).copied().unwrap_or_else(|| {
-                base_emit + old_target.saturating_sub(base_lift)
-            });
+            let new_target = ip_map
+                .get(&old_target)
+                .copied()
+                .unwrap_or_else(|| base_emit + old_target.saturating_sub(base_lift));
             self.bytecode.patch_u32(pos, new_target);
         }
     }

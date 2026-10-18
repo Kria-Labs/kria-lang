@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use crate::bytecode::Bytecode;
 use crate::compiler::Compiler;
+use crate::modules::{collect_imports, load_module_graph, resolve_import_path, ModuleGraph};
 use crate::optimizer::optimize;
-use crate::modules::{collect_imports, load_module_graph, ModuleGraph, resolve_import_path};
 
 pub fn compile_entry_file(entry: &std::path::Path) -> Result<Bytecode, String> {
     let graph = load_module_graph(entry)?;

@@ -24,17 +24,17 @@ pub const OP_INC_GLOBAL: u8 = 20;
 pub const OP_ADD_GLOBAL: u8 = 21;
 // Combined instructions for loop hot path
 pub const OP_LESS_CONST_JUMP_IF_FALSE: u8 = 22; // LoadGlobal + Constant + LessThan + JumpIfFalse
-pub const OP_LOOP_INC_LESS: u8 = 23;            // IncGlobal + Jump (full loop tick)
+pub const OP_LOOP_INC_LESS: u8 = 23; // IncGlobal + Jump (full loop tick)
 pub const OP_NULL: u8 = 24;
-pub const OP_MAKE_CLOSURE: u8 = 25;             // offset, num_params, num_upvalues, [kind, index]*
-pub const OP_CALL_FUNCTION: u8 = 26;            // Call function: num_args
-pub const OP_RETURN: u8 = 27;                   // Return from function
-pub const OP_LOAD_LOCAL: u8 = 28;               // Load local variable: frame_offset
-pub const OP_STORE_LOCAL: u8 = 29;              // Store local variable: frame_offset
-pub const OP_INPUT: u8 = 30;                    // Input with type mask: type_mask (bit 0: str, bit 1: int, bit 2: float)
-pub const OP_LOAD_UPVALUE: u8 = 31;             // Load captured variable: upvalue_index
-pub const OP_STORE_UPVALUE: u8 = 32;            // Store captured variable: upvalue_index
-pub const OP_BUILD_ARRAY: u8 = 33;             // u32 count, u8 mutable
+pub const OP_MAKE_CLOSURE: u8 = 25; // offset, num_params, num_upvalues, [kind, index]*
+pub const OP_CALL_FUNCTION: u8 = 26; // Call function: num_args
+pub const OP_RETURN: u8 = 27; // Return from function
+pub const OP_LOAD_LOCAL: u8 = 28; // Load local variable: frame_offset
+pub const OP_STORE_LOCAL: u8 = 29; // Store local variable: frame_offset
+pub const OP_INPUT: u8 = 30; // Input with type mask: type_mask (bit 0: str, bit 1: int, bit 2: float)
+pub const OP_LOAD_UPVALUE: u8 = 31; // Load captured variable: upvalue_index
+pub const OP_STORE_UPVALUE: u8 = 32; // Store captured variable: upvalue_index
+pub const OP_BUILD_ARRAY: u8 = 33; // u32 count, u8 mutable
 pub const OP_INDEX_GET: u8 = 34;
 pub const OP_INDEX_SET: u8 = 35;
 pub const OP_ARRAY_LEN: u8 = 36;
@@ -52,10 +52,10 @@ pub const OP_IS_ARRAY: u8 = 47;
 pub const OP_IS_OBJECT: u8 = 48;
 pub const OP_MEMBER_LENGTH: u8 = 49;
 pub const OP_FOR_IN_ARRAY_HEADER: u8 = 50; // arr_g, i_g, exit; pushes item or jumps
-pub const OP_FOR_IN_ARRAY_NEXT: u8 = 51;  // i_g, loop_start
-pub const OP_LOOP_STEP_LESS: u8 = 52;      // idx, limit, step — fused counter loop
-pub const OP_TYPE: u8 = 53;                // Pop value, push type name string
-pub const OP_WAIT: u8 = 54;                // Pop ms (number), sleep
+pub const OP_FOR_IN_ARRAY_NEXT: u8 = 51; // i_g, loop_start
+pub const OP_LOOP_STEP_LESS: u8 = 52; // idx, limit, step — fused counter loop
+pub const OP_TYPE: u8 = 53; // Pop value, push type name string
+pub const OP_WAIT: u8 = 54; // Pop ms (number), sleep
 
 pub const CAPTURE_LOCAL: u8 = 0;
 pub const CAPTURE_UPVALUE: u8 = 1;
@@ -95,7 +95,7 @@ impl Bytecode {
 
     #[inline(always)]
     pub fn read_u32(code: &[u8], ip: usize) -> u32 {
-        u32::from_le_bytes([code[ip], code[ip+1], code[ip+2], code[ip+3]])
+        u32::from_le_bytes([code[ip], code[ip + 1], code[ip + 2], code[ip + 3]])
     }
 
     #[inline(always)]
@@ -111,22 +111,30 @@ impl Bytecode {
     #[inline(always)]
     pub fn read_i64(code: &[u8], ip: usize) -> i64 {
         i64::from_le_bytes([
-            code[ip], code[ip+1], code[ip+2], code[ip+3],
-            code[ip+4], code[ip+5], code[ip+6], code[ip+7],
+            code[ip],
+            code[ip + 1],
+            code[ip + 2],
+            code[ip + 3],
+            code[ip + 4],
+            code[ip + 5],
+            code[ip + 6],
+            code[ip + 7],
         ])
     }
 
     pub fn patch_u32(&mut self, pos: usize, value: u32) {
         let bytes = value.to_le_bytes();
         self.code[pos] = bytes[0];
-        self.code[pos+1] = bytes[1];
-        self.code[pos+2] = bytes[2];
-        self.code[pos+3] = bytes[3];
+        self.code[pos + 1] = bytes[1];
+        self.code[pos + 2] = bytes[2];
+        self.code[pos + 3] = bytes[3];
     }
 
     pub fn add_constant(&mut self, value: Value) -> u32 {
         for (i, c) in self.constants.iter().enumerate() {
-            if *c == value { return i as u32; }
+            if *c == value {
+                return i as u32;
+            }
         }
         let idx = self.constants.len() as u32;
         self.constants.push(value);

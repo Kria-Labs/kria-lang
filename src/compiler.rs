@@ -1,10 +1,12 @@
-use std::collections::HashMap;
-use crate::ast::{Expression, Statement, Literal, BinaryOperator, UnaryOperator};
+use crate::ast::{BinaryOperator, Expression, Literal, Statement, UnaryOperator};
 use crate::bytecode::*;
-use crate::compile_opt::{fold_binary_literal, hoist_global_names, hoistable_member_pairs};
+use crate::compile_opt::{
+    fold_binary_literal, has_unknown_side_effects, hoist_global_names, hoistable_member_pairs,
+};
 use crate::ir::{emit_module, lift_bytecode, run_ir_passes};
 use crate::optimizer::optimize;
 use crate::vm::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 struct UpvalueCapture {
@@ -28,8 +30,8 @@ enum VarResolution {
 struct LoopContext {
     #[allow(dead_code)]
     start_pos: usize,
-    continue_jumps: Vec<usize>,  // Positions of continue jumps to be patched
-    exit_jumps: Vec<usize>,      // Positions of break jumps to be patched
+    continue_jumps: Vec<usize>, // Positions of continue jumps to be patched
+    exit_jumps: Vec<usize>,     // Positions of break jumps to be patched
 }
 
 pub struct Compiler {
@@ -71,7 +73,8 @@ impl Compiler {
         if self.import_bindings.contains_key(alias) {
             return Err(format!("Duplicate import alias '{}'", alias));
         }
-        self.import_bindings.insert(alias.to_string(), exports.clone());
+        self.import_bindings
+            .insert(alias.to_string(), exports.clone());
         Ok(())
     }
 
@@ -144,8 +147,7 @@ impl Compiler {
     pub fn compile_repl(&mut self, statements: &[Statement]) -> Result<(), String> {
         let n = statements.len();
         for (i, statement) in statements.iter().enumerate() {
-            let repl_print_expr =
-                i + 1 == n && matches!(statement, Statement::Expression(_));
+            let repl_print_expr = i + 1 == n && matches!(statement, Statement::Expression(_));
             self.compile_statement(statement, repl_print_expr)?;
         }
         self.bytecode.num_globals = self.globals.len();
@@ -210,7 +212,12 @@ impl Compiler {
         Ok(())
     }
 
-    fn emit_make_closure(&mut self, func_offset: u32, num_params: u32, captures: &[UpvalueCapture]) {
+    fn emit_make_closure(
+        &mut self,
+        func_offset: u32,
+        num_params: u32,
+        captures: &[UpvalueCapture],
+    ) {
         self.emit_opcode(OP_MAKE_CLOSURE);
         self.emit_u32(func_offset);
         self.emit_u32(num_params);
@@ -261,7 +268,11 @@ impl Compiler {
         Ok((func_offset, params.len() as u32, captures))
     }
 
-    fn compile_statement(&mut self, statement: &Statement, repl_expr_print: bool) -> Result<(), String> {
+    fn compile_statement(
+        &mut self,
+        statement: &Statement,
+        repl_expr_print: bool,
+    ) -> Result<(), String> {
         match statement {
             Statement::Assignment { name, value } => {
                 if self.compile_special_assignment(name, value)?.is_some() {
@@ -275,7 +286,10 @@ impl Compiler {
                 self.compile_expression(expr)?;
                 self.emit_opcode(OP_PRINT);
             }
-            Statement::If { branches, else_branch } => {
+            Statement::If {
+                branches,
+                else_branch,
+            } => {
                 let mut jump_to_end_positions = Vec::new();
 
                 for (i, (condition, branch)) in branches.iter().enumerate() {
@@ -358,7 +372,11 @@ impl Compiler {
                 }
                 self.emit_opcode(OP_RETURN);
             }
-            Statement::IndexAssign { object, index, value } => {
+            Statement::IndexAssign {
+                object,
+                index,
+                value,
+            } => {
                 self.compile_expression(object)?;
                 self.compile_expression(index)?;
                 self.compile_expression(value)?;
@@ -381,7 +399,11 @@ impl Compiler {
                 }
                 self.emit_opcode(OP_JUMP);
                 let jump_pos = self.emit_u32(0);
-                self.loop_stack.last_mut().unwrap().exit_jumps.push(jump_pos);
+                self.loop_stack
+                    .last_mut()
+                    .unwrap()
+                    .exit_jumps
+                    .push(jump_pos);
             }
             Statement::Continue => {
                 if self.loop_stack.is_empty() {
@@ -389,7 +411,11 @@ impl Compiler {
                 }
                 self.emit_opcode(OP_JUMP);
                 let jump_pos = self.emit_u32(0);
-                self.loop_stack.last_mut().unwrap().continue_jumps.push(jump_pos);
+                self.loop_stack
+                    .last_mut()
+                    .unwrap()
+                    .continue_jumps
+                    .push(jump_pos);
             }
             Statement::Expression(expr) => {
                 self.compile_expression(expr)?;
@@ -418,6 +444,10 @@ impl Compiler {
     }
 
     fn emit_loop_hoists(&mut self, body: &[Statement]) -> Result<(), String> {
+        self.member_hoist.clear();
+        if has_unknown_side_effects(body) {
+            return Ok(());
+        }
         let pairs = hoistable_member_pairs(body);
         if pairs.is_empty() {
             return Ok(());
@@ -428,7 +458,10 @@ impl Compiler {
                 object: Box::new(Expression::Identifier(obj.clone())),
                 member: member.clone(),
             })?;
-            let temp = hoist_map.get(&(obj.clone(), member.clone())).unwrap().clone();
+            let temp = hoist_map
+                .get(&(obj.clone(), member.clone()))
+                .unwrap()
+                .clone();
             let idx = self.resolve_global(&temp);
             self.emit_opcode(OP_STORE_GLOBAL);
             self.emit_u32(idx as u32);
@@ -624,8 +657,10 @@ impl Compiler {
     ) -> Result<Option<()>, String> {
         if let Expression::BinaryOp { left, op, right } = condition {
             if *op == BinaryOperator::LessThan {
-                if let (Expression::Identifier(cond_var), Expression::Literal(Literal::Number(limit))) =
-                    (&**left, &**right)
+                if let (
+                    Expression::Identifier(cond_var),
+                    Expression::Literal(Literal::Number(limit)),
+                ) = (&**left, &**right)
                 {
                     if body.len() == 1 {
                         if let Statement::Assignment { name, value } = &body[0] {
@@ -638,11 +673,19 @@ impl Compiler {
                                 {
                                     if *body_op == BinaryOperator::Add {
                                         match (&**body_left, &**body_right) {
-                                            (Expression::Identifier(src), Expression::Literal(Literal::Number(n)))
-                                            | (Expression::Literal(Literal::Number(n)), Expression::Identifier(src))
-                                                if src == cond_var =>
-                                            {
-                                                let idx = self.resolve_global(cond_var);
+                                            (
+                                                Expression::Identifier(src),
+                                                Expression::Literal(Literal::Number(n)),
+                                            )
+                                            | (
+                                                Expression::Literal(Literal::Number(n)),
+                                                Expression::Identifier(src),
+                                            ) if src == cond_var => {
+                                                let idx = match self.resolve_identifier(cond_var)? {
+                                                    VarResolution::Global(index) => index,
+                                                    VarResolution::Local(_)
+                                                    | VarResolution::Upvalue(_) => return Ok(None),
+                                                };
                                                 if *n == 1 {
                                                     self.emit_opcode(OP_LOOP_INC_LESS);
                                                     self.emit_u32(idx as u32);
@@ -664,7 +707,10 @@ impl Compiler {
                     }
 
                     self.emit_loop_hoists(body)?;
-                    let idx = self.resolve_global(cond_var);
+                    let idx = match self.resolve_identifier(cond_var)? {
+                        VarResolution::Global(index) => index,
+                        VarResolution::Local(_) | VarResolution::Upvalue(_) => return Ok(None),
+                    };
                     let loop_start = self.bytecode.code.len();
                     self.loop_stack.push(LoopContext {
                         start_pos: loop_start,
@@ -702,84 +748,91 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_special_assignment(&mut self, name: &str, value: &Expression) -> Result<Option<()>, String> {
+    fn compile_special_assignment(
+        &mut self,
+        name: &str,
+        value: &Expression,
+    ) -> Result<Option<()>, String> {
         match value {
-            Expression::BinaryOp { left, op, right } => {
-                match (&**left, &**right) {
-                    (Expression::Identifier(src), Expression::Literal(Literal::Number(n)))
-                    | (Expression::Literal(Literal::Number(n)), Expression::Identifier(src))
-                        if src == name =>
-                    {
-                        let index = self.resolve_global(name);
-                        return match op {
-                            BinaryOperator::Add => {
-                                if *n == 1 {
-                                    self.emit_opcode(OP_INC_GLOBAL);
-                                    self.emit_u32(index as u32);
-                                } else {
-                                    self.emit_opcode(OP_ADD_GLOBAL);
-                                    self.emit_u32(index as u32);
-                                    self.emit_i64(*n);
-                                }
-                                Ok(Some(()))
+            Expression::BinaryOp { left, op, right } => match (&**left, &**right) {
+                (Expression::Identifier(src), Expression::Literal(Literal::Number(n)))
+                | (Expression::Literal(Literal::Number(n)), Expression::Identifier(src))
+                    if src == name =>
+                {
+                    let index = match self.resolve_identifier(name)? {
+                        VarResolution::Global(index) => index,
+                        VarResolution::Local(_) | VarResolution::Upvalue(_) => return Ok(None),
+                    };
+                    return match op {
+                        BinaryOperator::Add => {
+                            if *n == 1 {
+                                self.emit_opcode(OP_INC_GLOBAL);
+                                self.emit_u32(index as u32);
+                            } else {
+                                self.emit_opcode(OP_ADD_GLOBAL);
+                                self.emit_u32(index as u32);
+                                self.emit_i64(*n);
                             }
-                            BinaryOperator::Subtract => {
-                                if let Expression::Identifier(_) = &**left {
+                            Ok(Some(()))
+                        }
+                        BinaryOperator::Subtract => {
+                            if let Expression::Identifier(_) = &**left {
+                                if let Some(delta) = n.checked_neg() {
                                     self.emit_opcode(OP_ADD_GLOBAL);
                                     self.emit_u32(index as u32);
-                                    self.emit_i64(-*n);
+                                    self.emit_i64(delta);
                                     Ok(Some(()))
                                 } else {
                                     Ok(None)
                                 }
+                            } else {
+                                Ok(None)
                             }
-                            _ => Ok(None),
-                        };
-                    }
-                    _ => Ok(None),
+                        }
+                        _ => Ok(None),
+                    };
                 }
-            }
+                _ => Ok(None),
+            },
             _ => Ok(None),
         }
     }
 
     fn compile_expression(&mut self, expression: &Expression) -> Result<(), String> {
         match expression {
-            Expression::Literal(literal) => {
-                match literal {
-                    Literal::Array { elements, mutable } => {
-                        for elem in elements {
-                            self.compile_expression(elem)?;
-                        }
-                        self.emit_opcode(OP_BUILD_ARRAY);
-                        self.emit_u32(elements.len() as u32);
-                        self.bytecode.emit_byte(if *mutable { 1 } else { 0 });
+            Expression::Literal(literal) => match literal {
+                Literal::Array { elements, mutable } => {
+                    for elem in elements {
+                        self.compile_expression(elem)?;
                     }
-                    Literal::Object { fields } => {
-                        for (_, elem) in fields {
-                            self.compile_expression(elem)?;
-                        }
-                        self.emit_opcode(OP_BUILD_OBJECT);
-                        self.emit_u32(fields.len() as u32);
-                        for (key, _) in fields {
-                            let key_idx = self.bytecode.add_constant(Value::String(Arc::from(
-                                key.as_str(),
-                            )));
-                            self.emit_u32(key_idx);
-                        }
+                    self.emit_opcode(OP_BUILD_ARRAY);
+                    self.emit_u32(elements.len() as u32);
+                    self.bytecode.emit_byte(if *mutable { 1 } else { 0 });
+                }
+                Literal::Object { fields } => {
+                    for (_, elem) in fields {
+                        self.compile_expression(elem)?;
                     }
-                    _ => {
-                        let val = match literal {
-                            Literal::Number(n) => Value::Number(*n),
-                            Literal::String(s) => Value::String(Arc::from(s.as_str())),
-                            Literal::Boolean(b) => Value::Boolean(*b),
-                            Literal::Null => Value::Null,
-                            Literal::Array { .. } | Literal::Object { .. } => unreachable!(),
-                        };
-                        self.emit_constant(val);
+                    self.emit_opcode(OP_BUILD_OBJECT);
+                    self.emit_u32(fields.len() as u32);
+                    for (key, _) in fields {
+                        let key_idx = self
+                            .bytecode
+                            .add_constant(Value::String(Arc::from(key.as_str())));
+                        self.emit_u32(key_idx);
                     }
                 }
-            }
+                _ => {
+                    let val = match literal {
+                        Literal::Number(n) => Value::Number(*n),
+                        Literal::String(s) => Value::String(Arc::from(s.as_str())),
+                        Literal::Boolean(b) => Value::Boolean(*b),
+                        Literal::Null => Value::Null,
+                        Literal::Array { .. } | Literal::Object { .. } => unreachable!(),
+                    };
+                    self.emit_constant(val);
+                }
+            },
             Expression::Identifier(name) => {
                 let resolved = self.resolve_identifier(name)?;
                 self.emit_load_var(resolved)?;
@@ -900,8 +953,9 @@ impl Compiler {
                 if member == "length" {
                     self.emit_opcode(OP_MEMBER_LENGTH);
                 } else {
-                    let key_idx =
-                        self.bytecode.add_constant(Value::String(Arc::from(member.as_str())));
+                    let key_idx = self
+                        .bytecode
+                        .add_constant(Value::String(Arc::from(member.as_str())));
                     self.emit_opcode(OP_OBJECT_GET_CONST);
                     self.emit_u32(key_idx);
                 }
@@ -995,8 +1049,7 @@ impl Compiler {
             return Ok(VarResolution::Local(index));
         }
 
-        if let Some(index) = self
-            .scope_stack[current]
+        if let Some(index) = self.scope_stack[current]
             .upvalue_names
             .iter()
             .position(|n| n == name)
@@ -1010,8 +1063,7 @@ impl Compiler {
                 let index = self.scope_stack[current].upvalue_names.len() - 1;
                 return Ok(VarResolution::Upvalue(index));
             }
-            if let Some(uv_idx) = self
-                .scope_stack[up]
+            if let Some(uv_idx) = self.scope_stack[up]
                 .upvalue_names
                 .iter()
                 .position(|n| n == name)
@@ -1076,8 +1128,9 @@ impl Compiler {
             self.emit_u32(cur_idx as u32);
             match seg {
                 PathSegment::Dot(name) => {
-                    let key_idx =
-                        self.bytecode.add_constant(Value::String(Arc::from(name.as_str())));
+                    let key_idx = self
+                        .bytecode
+                        .add_constant(Value::String(Arc::from(name.as_str())));
                     self.emit_opcode(OP_OBJECT_GET_OR_CREATE_CONST);
                     self.emit_u32(key_idx);
                 }
@@ -1094,8 +1147,9 @@ impl Compiler {
         self.emit_u32(cur_idx as u32);
         match &segments[last] {
             PathSegment::Dot(name) => {
-                let key_idx =
-                    self.bytecode.add_constant(Value::String(Arc::from(name.as_str())));
+                let key_idx = self
+                    .bytecode
+                    .add_constant(Value::String(Arc::from(name.as_str())));
                 self.emit_opcode(OP_CONSTANT);
                 self.emit_u32(key_idx);
                 self.compile_expression(value)?;
@@ -1132,8 +1186,9 @@ impl Compiler {
             self.emit_u32(cur_idx as u32);
             match seg {
                 PathSegment::Dot(name) => {
-                    let key_idx =
-                        self.bytecode.add_constant(Value::String(Arc::from(name.as_str())));
+                    let key_idx = self
+                        .bytecode
+                        .add_constant(Value::String(Arc::from(name.as_str())));
                     self.emit_opcode(OP_OBJECT_GET_CONST);
                     self.emit_u32(key_idx);
                 }
@@ -1150,8 +1205,9 @@ impl Compiler {
         self.emit_u32(cur_idx as u32);
         match &segments[last] {
             PathSegment::Dot(name) => {
-                let key_idx =
-                    self.bytecode.add_constant(Value::String(Arc::from(name.as_str())));
+                let key_idx = self
+                    .bytecode
+                    .add_constant(Value::String(Arc::from(name.as_str())));
                 self.emit_opcode(OP_CONSTANT);
                 self.emit_u32(key_idx);
                 self.emit_opcode(OP_OBJECT_DELETE);
@@ -1176,6 +1232,61 @@ mod tests {
     use super::*;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
+
+    fn run_source(source: &str) -> Result<(), String> {
+        let tokens = Lexer::new(source).tokenize();
+        let mut parser = Parser::new(tokens);
+        let statements = parser.parse()?;
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&statements)?;
+        let bytecode = compiler.finish_bytecode();
+        crate::vm::VM::new().execute(&bytecode)
+    }
+
+    #[test]
+    fn optimized_bytecode_preserves_conditional_jump_targets() {
+        run_source(
+            "set result = 0\nif (false) {\n  123\n} else {\n  set result = 1\n}\nif (result != 1) {\n  print(1 / 0)\n}",
+        )
+        .expect("false branch and jump target");
+
+        run_source(
+            "set result = 0\nif (true) {\n  123\n  set result = 1\n} else {\n  set result = 2\n}\nif (result != 1) {\n  print(1 / 0)\n}",
+        )
+        .expect("true branch and jump target");
+    }
+
+    #[test]
+    fn global_counter_optimizations_do_not_capture_function_parameters() {
+        run_source(
+            "fn increment(n) {\n  set n = n + 1\n  return n\n}\nset result = increment(4)\nif (result != 5) {\n  print(1 / 0)\n}\nfn count(n) {\n  while (n < 3) {\n    set n = n + 1\n  }\n  return n\n}\nset count_result = count(0)\nif (count_result != 3) {\n  print(1 / 0)\n}",
+        )
+        .expect("local parameter increments and loop");
+    }
+
+    #[test]
+    fn nested_closures_are_lifted_and_emitted() {
+        run_source(
+            "set make = fn(factor) {\n  return fn(x) {\n    return x * factor\n  }\n}\nset times_three = make(3)\nset result = times_three(7)\nif (result != 21) {\n  print(1 / 0)\n}",
+        )
+        .expect("nested closure");
+    }
+
+    #[test]
+    fn loop_member_hoisting_respects_calls_that_mutate_objects() {
+        run_source(
+            "set obj = { x: 0 }\nfn increment() {\n  obj.x = obj.x + 1\n}\nset i = 0\nset total = 0\nwhile (i < 2) {\n  increment()\n  set total = total + obj.x\n  set i = i + 1\n}\nif (total != 3) {\n  print(1 / 0)\n}",
+        )
+        .expect("member read must observe changes made by calls");
+    }
+
+    #[test]
+    fn negative_numbers_parse_in_arithmetic_and_calls() {
+        run_source(
+            "fn identity(x) {\n  return x\n}\nset result = 2 * -3 + -(2 + 1)\nif (result != -9) {\n  print(1 / 0)\n}\nif (identity(-10) != -10) {\n  print(1 / 0)\n}",
+        )
+        .expect("unary minus");
+    }
 
     #[test]
     fn type_builtin_emits_opcode() {

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinaryOperator, Expression, Statement};
+use crate::ast::{BinaryOperator, Expression, Literal, Statement};
 
 /// Names assigned anywhere in `body` (top-level statements only).
 pub fn assigned_in_body(body: &[Statement]) -> HashSet<String> {
@@ -17,7 +17,10 @@ fn assigned_in_statement(stmt: &Statement, names: &mut HashSet<String>) {
             names.insert(name.clone());
         }
         Statement::IndexAssign { .. } | Statement::PropertyAssign { .. } => {}
-        Statement::If { branches, else_branch } => {
+        Statement::If {
+            branches,
+            else_branch,
+        } => {
             for (_, block) in branches {
                 for s in block {
                     assigned_in_statement(s, names);
@@ -34,7 +37,12 @@ fn assigned_in_statement(stmt: &Statement, names: &mut HashSet<String>) {
                 assigned_in_statement(s, names);
             }
         }
-        Statement::ForIn { body, key_name, value_name, .. } => {
+        Statement::ForIn {
+            body,
+            key_name,
+            value_name,
+            ..
+        } => {
             names.insert(key_name.clone());
             if let Some(v) = value_name {
                 names.insert(v.clone());
@@ -64,6 +72,64 @@ pub fn hoistable_member_pairs(body: &[Statement]) -> Vec<(String, String)> {
     pairs
 }
 
+pub fn has_unknown_side_effects(body: &[Statement]) -> bool {
+    body.iter().any(statement_has_unknown_side_effects)
+}
+
+fn statement_has_unknown_side_effects(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Assignment { value, .. }
+        | Statement::Print(value)
+        | Statement::Return(Some(value))
+        | Statement::Expression(value) => expression_has_side_effects(value),
+        Statement::If {
+            branches,
+            else_branch,
+        } => {
+            branches.iter().any(|(condition, body)| {
+                expression_has_side_effects(condition) || has_unknown_side_effects(body)
+            }) || else_branch
+                .as_ref()
+                .is_some_and(|body| has_unknown_side_effects(body))
+        }
+        Statement::While { condition, body } => {
+            expression_has_side_effects(condition) || has_unknown_side_effects(body)
+        }
+        Statement::ForIn { iterable, body, .. } => {
+            expression_has_side_effects(iterable) || has_unknown_side_effects(body)
+        }
+        Statement::IndexAssign { .. }
+        | Statement::PropertyAssign { .. }
+        | Statement::FunctionDef { .. }
+        | Statement::Import { .. } => true,
+        Statement::Return(None) | Statement::Break | Statement::Continue => false,
+    }
+}
+
+fn expression_has_side_effects(expr: &Expression) -> bool {
+    match expr {
+        Expression::FunctionCall { .. }
+        | Expression::Call { .. }
+        | Expression::Input { .. }
+        | Expression::FunctionExpr { .. } => true,
+        Expression::UnaryOp { expr, .. } => expression_has_side_effects(expr),
+        Expression::BinaryOp { left, right, .. } => {
+            expression_has_side_effects(left) || expression_has_side_effects(right)
+        }
+        Expression::Index { object, index } => {
+            expression_has_side_effects(object) || expression_has_side_effects(index)
+        }
+        Expression::MemberAccess { object, .. } => expression_has_side_effects(object),
+        Expression::Literal(Literal::Array { elements, .. }) => {
+            elements.iter().any(expression_has_side_effects)
+        }
+        Expression::Literal(Literal::Object { fields }) => fields
+            .iter()
+            .any(|(_, value)| expression_has_side_effects(value)),
+        Expression::Literal(_) | Expression::Identifier(_) => false,
+    }
+}
+
 fn collect_member_pairs_stmt(
     stmt: &Statement,
     assigned: &HashSet<String>,
@@ -77,7 +143,10 @@ fn collect_member_pairs_stmt(
         | Statement::Expression(value) => {
             collect_member_pairs_expr(value, assigned, seen, pairs);
         }
-        Statement::If { branches, else_branch } => {
+        Statement::If {
+            branches,
+            else_branch,
+        } => {
             for (cond, block) in branches {
                 collect_member_pairs_expr(cond, assigned, seen, pairs);
                 for s in block {
@@ -96,11 +165,7 @@ fn collect_member_pairs_stmt(
                 collect_member_pairs_stmt(s, assigned, seen, pairs);
             }
         }
-        Statement::ForIn {
-            iterable,
-            body,
-            ..
-        } => {
+        Statement::ForIn { iterable, body, .. } => {
             collect_member_pairs_expr(iterable, assigned, seen, pairs);
             for s in body {
                 collect_member_pairs_stmt(s, assigned, seen, pairs);
@@ -174,13 +239,14 @@ pub fn fold_binary_literal(
         },
     ) else {
         return match (left, right) {
-            (Expression::Literal(Literal::Boolean(l)), Expression::Literal(Literal::Boolean(r))) => {
-                Some(Value::Boolean(match op {
-                    BinaryOperator::And => *l && *r,
-                    BinaryOperator::Or => *l || *r,
-                    _ => return None,
-                }))
-            }
+            (
+                Expression::Literal(Literal::Boolean(l)),
+                Expression::Literal(Literal::Boolean(r)),
+            ) => Some(Value::Boolean(match op {
+                BinaryOperator::And => *l && *r,
+                BinaryOperator::Or => *l || *r,
+                _ => return None,
+            })),
             (Expression::Literal(Literal::String(l)), Expression::Literal(Literal::String(r)))
                 if matches!(op, BinaryOperator::Add) =>
             {

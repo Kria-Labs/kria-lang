@@ -32,26 +32,33 @@ pub fn run(module: &mut IrModule) {
                         left,
                         right,
                     } => {
-                        if let (Some(&li), Some(&ri)) =
-                            (const_map.get(left), const_map.get(right))
+                        if let (Some(&li), Some(&ri)) = (const_map.get(left), const_map.get(right))
                         {
                             let li = li as usize;
                             let ri = ri as usize;
-                            if li < constants.len() && ri < constants.len() {
-                                if let Some(folded) = fold_const_binop(
-                                    &constants[li],
-                                    *op,
-                                    &constants[ri],
-                                ) {
-                                let idx = (base_len + extra_constants.len()) as u32;
-                                extra_constants.push(folded);
-                                const_map.insert(*result, idx);
-                                out.push(IrInst::Const {
-                                    result: *result,
-                                    idx,
-                                });
-                                out_ips.push(ip);
-                                continue;
+                            let left_value = constants
+                                .get(li)
+                                .or_else(|| extra_constants.get(li.saturating_sub(base_len)))
+                                .cloned();
+                            let right_value = constants
+                                .get(ri)
+                                .or_else(|| extra_constants.get(ri.saturating_sub(base_len)))
+                                .cloned();
+                            if let (Some(folded_left), Some(folded_right)) =
+                                (left_value, right_value)
+                            {
+                                if let Some(folded) =
+                                    fold_const_binop(&folded_left, *op, &folded_right)
+                                {
+                                    let idx = (base_len + extra_constants.len()) as u32;
+                                    extra_constants.push(folded);
+                                    const_map.insert(*result, idx);
+                                    out.push(IrInst::FoldedBinOp {
+                                        result: *result,
+                                        idx,
+                                    });
+                                    out_ips.push(ip);
+                                    continue;
                                 }
                             }
                         }

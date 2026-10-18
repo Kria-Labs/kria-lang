@@ -59,8 +59,11 @@ pub fn lift_bytecode(bytecode: &Bytecode) -> IrModule {
     };
 
     for (i, meta) in closures.iter().enumerate() {
-        let fid = FunctionId(i as u32 + 1);
-        ctx.offset_to_fid.insert(meta.offset, fid);
+        ctx.offset_to_fid
+            .insert(meta.offset, FunctionId(i as u32 + 1));
+    }
+
+    for meta in &closures {
         let params: Vec<IrParam> = (0..meta.num_params)
             .map(|j| IrParam {
                 name: format!("p{}", j),
@@ -195,8 +198,8 @@ fn lift_one(
             let val = ctx.pop();
             IrInst::StoreUpvalue { slot, value: val }
         }
-        OP_ADD | OP_SUBTRACT | OP_MULTIPLY | OP_DIVIDE | OP_EQUALS | OP_NOT_EQUALS
-        | OP_GREATER | OP_LESS | OP_GREATER_EQUAL | OP_LESS_EQUAL => {
+        OP_ADD | OP_SUBTRACT | OP_MULTIPLY | OP_DIVIDE | OP_EQUALS | OP_NOT_EQUALS | OP_GREATER
+        | OP_LESS | OP_GREATER_EQUAL | OP_LESS_EQUAL => {
             let right = ctx.pop();
             let left = ctx.pop();
             let ir_op = match op {
@@ -225,7 +228,10 @@ fn lift_one(
             let v = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::Not { result: r, value: v }
+            IrInst::Not {
+                result: r,
+                value: v,
+            }
         }
         OP_PRINT => IrInst::Print { value: ctx.pop() },
         OP_POP => IrInst::Pop { value: ctx.pop() },
@@ -332,12 +338,18 @@ fn lift_one(
             let arr = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::ArrayLen { result: r, array: arr }
+            IrInst::ArrayLen {
+                result: r,
+                array: arr,
+            }
         }
         OP_ARRAY_PUSH => {
             let val = ctx.pop();
             let arr = ctx.pop();
-            let push = IrInst::ArrayPush { array: arr, value: val };
+            let push = IrInst::ArrayPush {
+                array: arr,
+                value: val,
+            };
             block.push_inst(insn_start as u32, push);
             // Compiler emits OP_NULL after push
             let null_ip = *ip;
@@ -353,7 +365,10 @@ fn lift_one(
             let arr = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::ArrayPop { result: r, array: arr }
+            IrInst::ArrayPop {
+                result: r,
+                array: arr,
+            }
         }
         OP_BUILD_OBJECT => {
             let count = read_u32(bytecode, ip);
@@ -415,7 +430,10 @@ fn lift_one(
             let obj = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::ObjectKeys { result: r, object: obj }
+            IrInst::ObjectKeys {
+                result: r,
+                object: obj,
+            }
         }
         OP_OBJECT_GET_OR_CREATE_CONST => {
             let key_idx = read_u32(bytecode, ip);
@@ -443,19 +461,28 @@ fn lift_one(
             let v = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::IsArray { result: r, value: v }
+            IrInst::IsArray {
+                result: r,
+                value: v,
+            }
         }
         OP_IS_OBJECT => {
             let v = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::IsObject { result: r, value: v }
+            IrInst::IsObject {
+                result: r,
+                value: v,
+            }
         }
         OP_MEMBER_LENGTH => {
             let obj = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::MemberLength { result: r, object: obj }
+            IrInst::MemberLength {
+                result: r,
+                object: obj,
+            }
         }
         OP_FOR_IN_ARRAY_HEADER => {
             let arr_slot = read_u32(bytecode, ip);
@@ -509,7 +536,10 @@ fn lift_one(
             let v = ctx.pop();
             let r = ctx.fresh();
             ctx.stack.push(r);
-            IrInst::Type { result: r, value: v }
+            IrInst::Type {
+                result: r,
+                value: v,
+            }
         }
         OP_WAIT => {
             let v = ctx.pop();
@@ -584,16 +614,10 @@ fn next_insn_start(bytecode: &Bytecode, ip: usize) -> usize {
     let op = bytecode.code[ip];
     let mut next = ip + 1;
     match op {
-        OP_CONSTANT
-        | OP_LOAD_GLOBAL
-        | OP_STORE_GLOBAL
-        | OP_LOAD_LOCAL
-        | OP_STORE_LOCAL
-        | OP_LOAD_UPVALUE
-        | OP_STORE_UPVALUE
-        | OP_INC_GLOBAL
-        | OP_JUMP
-        | OP_JUMP_IF_FALSE => next += 4,
+        OP_CONSTANT | OP_LOAD_GLOBAL | OP_STORE_GLOBAL | OP_LOAD_LOCAL | OP_STORE_LOCAL
+        | OP_LOAD_UPVALUE | OP_STORE_UPVALUE | OP_INC_GLOBAL | OP_JUMP | OP_JUMP_IF_FALSE => {
+            next += 4
+        }
         OP_ADD_GLOBAL => next += 4 + 8,
         OP_LOOP_INC_LESS => next += 4 + 8,
         OP_LOOP_STEP_LESS => next += 4 + 8 + 8,

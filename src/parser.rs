@@ -1,5 +1,5 @@
+use crate::ast::{BinaryOperator, Expression, Literal, Statement, UnaryOperator};
 use crate::lexer::Token;
-use crate::ast::{Statement, Expression, Literal, BinaryOperator, UnaryOperator};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -13,26 +13,30 @@ impl Parser {
             position: 0,
         }
     }
-    
+
     fn current_token(&self) -> &Token {
         self.tokens.get(self.position).unwrap_or(&Token::Eof)
     }
-    
+
     fn advance(&mut self) {
         if self.position < self.tokens.len() {
             self.position += 1;
         }
     }
-    
+
     fn expect(&mut self, expected: Token) -> Result<(), String> {
         if std::mem::discriminant(self.current_token()) == std::mem::discriminant(&expected) {
             self.advance();
             Ok(())
         } else {
-            Err(format!("Expected {:?}, found {:?}", expected, self.current_token()))
+            Err(format!(
+                "Expected {:?}, found {:?}",
+                expected,
+                self.current_token()
+            ))
         }
     }
-    
+
     fn expect_statement_end(&mut self) -> Result<(), String> {
         match self.current_token() {
             Token::Newline => {
@@ -40,13 +44,16 @@ impl Parser {
                 Ok(())
             }
             Token::Eof | Token::RBrace => Ok(()),
-            _ => Err(format!("Expected newline or end of file, found {:?}", self.current_token())),
+            _ => Err(format!(
+                "Expected newline or end of file, found {:?}",
+                self.current_token()
+            )),
         }
     }
-    
+
     pub fn parse(&mut self) -> Result<Vec<Statement>, String> {
         let mut statements = Vec::new();
-        
+
         while self.current_token() != &Token::Eof {
             while self.current_token() == &Token::Newline {
                 self.advance();
@@ -56,10 +63,10 @@ impl Parser {
             }
             statements.push(self.parse_statement()?);
         }
-        
+
         Ok(statements)
     }
-    
+
     fn parse_statement(&mut self) -> Result<Statement, String> {
         match self.current_token() {
             Token::Set => self.parse_assignment(),
@@ -71,7 +78,9 @@ impl Parser {
             Token::Export => {
                 self.advance();
                 if self.current_token() != &Token::Fn {
-                    return Err("export only supports functions (use: export fn name(...))".to_string());
+                    return Err(
+                        "export only supports functions (use: export fn name(...))".to_string()
+                    );
                 }
                 self.parse_function_def(true)
             }
@@ -173,7 +182,7 @@ impl Parser {
             body,
         })
     }
-    
+
     fn parse_while_statement(&mut self) -> Result<Statement, String> {
         self.expect(Token::While)?;
         let condition = self.parse_expression()?;
@@ -192,7 +201,7 @@ impl Parser {
             self.advance();
         }
         let true_branch = self.parse_block()?;
-        
+
         while self.current_token() == &Token::Newline {
             self.advance();
         }
@@ -248,7 +257,7 @@ impl Parser {
 
     fn parse_assignment(&mut self) -> Result<Statement, String> {
         self.expect(Token::Set)?;
-        
+
         let name = match self.current_token() {
             Token::Identifier(n) => {
                 let n_clone = n.clone();
@@ -257,25 +266,25 @@ impl Parser {
             }
             _ => return Err("Expected identifier after 'set'".to_string()),
         };
-        
+
         while self.current_token() == &Token::Newline {
             self.advance();
         }
-        
+
         self.expect(Token::Equal)?;
         let value = self.parse_expression()?;
         self.expect_statement_end()?;
-        
+
         Ok(Statement::Assignment { name, value })
     }
-    
+
     fn parse_print(&mut self) -> Result<Statement, String> {
         self.expect(Token::Print)?;
         self.expect(Token::LParen)?;
         let expr = self.parse_expression()?;
         self.expect(Token::RParen)?;
         self.expect_statement_end()?;
-        
+
         Ok(Statement::Print(expr))
     }
 
@@ -304,7 +313,7 @@ impl Parser {
 
     fn parse_function_def(&mut self, exported: bool) -> Result<Statement, String> {
         self.expect(Token::Fn)?;
-        
+
         let name = match self.current_token() {
             Token::Identifier(n) => {
                 let n_clone = n.clone();
@@ -313,18 +322,18 @@ impl Parser {
             }
             _ => return Err("Expected function name after 'fn'".to_string()),
         };
-        
+
         self.expect(Token::LParen)?;
         let params = self.parse_parameter_list()?;
         self.expect(Token::RParen)?;
-        
+
         while self.current_token() == &Token::Newline {
             self.advance();
         }
-        
+
         let body = self.parse_block()?;
         self.expect_statement_end()?;
-        
+
         Ok(Statement::FunctionDef {
             name,
             params,
@@ -335,24 +344,24 @@ impl Parser {
 
     fn parse_return(&mut self) -> Result<Statement, String> {
         self.expect(Token::Return)?;
-        
+
         let expr = match self.current_token() {
             Token::Newline | Token::RBrace | Token::Eof => None,
             _ => Some(self.parse_expression()?),
         };
-        
+
         self.expect_statement_end()?;
         Ok(Statement::Return(expr))
     }
 
     fn parse_parameter_list(&mut self) -> Result<Vec<String>, String> {
         let mut params = Vec::new();
-        
+
         while self.current_token() != &Token::RParen {
             if let Token::Identifier(name) = self.current_token() {
                 params.push(name.clone());
                 self.advance();
-                
+
                 if self.current_token() == &Token::RParen {
                     break;
                 }
@@ -364,14 +373,14 @@ impl Parser {
                 return Err("Expected parameter name".to_string());
             }
         }
-        
+
         Ok(params)
     }
-    
+
     fn parse_expression(&mut self) -> Result<Expression, String> {
         self.parse_or()
     }
-    
+
     fn parse_or(&mut self) -> Result<Expression, String> {
         let mut left = self.parse_and()?;
 
@@ -451,7 +460,7 @@ impl Parser {
 
     fn parse_additive(&mut self) -> Result<Expression, String> {
         let mut left = self.parse_multiplicative()?;
-        
+
         loop {
             match self.current_token() {
                 Token::Plus => {
@@ -475,18 +484,18 @@ impl Parser {
                 _ => break,
             }
         }
-        
+
         Ok(left)
     }
-    
+
     fn parse_multiplicative(&mut self) -> Result<Expression, String> {
         let mut left = self.parse_unary()?;
-        
+
         loop {
             match self.current_token() {
                 Token::Star => {
                     self.advance();
-                    let right = self.parse_primary()?;
+                    let right = self.parse_unary()?;
                     left = Expression::BinaryOp {
                         left: Box::new(left),
                         op: BinaryOperator::Multiply,
@@ -495,7 +504,7 @@ impl Parser {
                 }
                 Token::Slash => {
                     self.advance();
-                    let right = self.parse_primary()?;
+                    let right = self.parse_unary()?;
                     left = Expression::BinaryOp {
                         left: Box::new(left),
                         op: BinaryOperator::Divide,
@@ -505,10 +514,10 @@ impl Parser {
                 _ => break,
             }
         }
-        
+
         Ok(left)
     }
-    
+
     fn parse_unary(&mut self) -> Result<Expression, String> {
         match self.current_token() {
             Token::Not => {
@@ -517,6 +526,15 @@ impl Parser {
                 Ok(Expression::UnaryOp {
                     op: UnaryOperator::Not,
                     expr: Box::new(expr),
+                })
+            }
+            Token::Minus => {
+                self.advance();
+                let expr = self.parse_unary()?;
+                Ok(Expression::BinaryOp {
+                    left: Box::new(Expression::Literal(Literal::Number(0))),
+                    op: BinaryOperator::Subtract,
+                    right: Box::new(expr),
                 })
             }
             _ => {
@@ -641,7 +659,7 @@ impl Parser {
             Token::Identifier(name) => {
                 let name_val = name.clone();
                 self.advance();
-                
+
                 // Check for input<type>("prompt")
                 if name_val == "input" && self.current_token() == &Token::Less {
                     self.advance(); // consume <
@@ -650,7 +668,7 @@ impl Parser {
                     self.expect(Token::LParen)?;
                     let prompt = self.parse_expression()?;
                     self.expect(Token::RParen)?;
-                    
+
                     Ok(Expression::Input {
                         types,
                         prompt: Box::new(prompt),
@@ -674,11 +692,11 @@ impl Parser {
                 self.expect(Token::LParen)?;
                 let params = self.parse_parameter_list()?;
                 self.expect(Token::RParen)?;
-                
+
                 while self.current_token() == &Token::Newline {
                     self.advance();
                 }
-                
+
                 let body = self.parse_block()?;
                 Ok(Expression::FunctionExpr { params, body })
             }
@@ -694,38 +712,41 @@ impl Parser {
                 self.parse_array_literal(false)
             }
             Token::LBrace => self.parse_object_literal(),
-            _ => Err(format!("Unexpected token in expression: {:?}", self.current_token())),
+            _ => Err(format!(
+                "Unexpected token in expression: {:?}",
+                self.current_token()
+            )),
         }
     }
 
     fn parse_argument_list(&mut self) -> Result<Vec<Expression>, String> {
         let mut args = Vec::new();
-        
+
         while self.current_token() != &Token::RParen {
             args.push(self.parse_expression()?);
-            
+
             if self.current_token() == &Token::RParen {
                 break;
             }
-            
+
             if matches!(self.current_token(), Token::Comma) {
                 self.advance();
             }
         }
-        
+
         Ok(args)
     }
-    
+
     fn parse_input_types(&mut self) -> Result<Vec<crate::ast::InputType>, String> {
         use crate::ast::InputType;
         let mut types = Vec::new();
-        
+
         loop {
             match self.current_token() {
                 Token::Identifier(name) => {
                     let type_name = name.clone();
                     self.advance();
-                    
+
                     let input_type = match type_name.as_str() {
                         "str" => InputType::String,
                         "int" => InputType::Int,
@@ -733,7 +754,7 @@ impl Parser {
                         _ => return Err(format!("Unknown input type: {}", type_name)),
                     };
                     types.push(input_type);
-                    
+
                     if self.current_token() == &Token::Pipe {
                         self.advance();
                     } else {
@@ -743,11 +764,11 @@ impl Parser {
                 _ => return Err("Expected input type (str, int, or float)".to_string()),
             }
         }
-        
+
         if types.is_empty() {
             return Err("At least one input type is required".to_string());
         }
-        
+
         Ok(types)
     }
 }

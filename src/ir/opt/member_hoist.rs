@@ -17,7 +17,10 @@ fn assigned_in_statement(stmt: &Statement, names: &mut HashSet<String>) {
             names.insert(name.clone());
         }
         Statement::IndexAssign { .. } | Statement::PropertyAssign { .. } => {}
-        Statement::If { branches, else_branch } => {
+        Statement::If {
+            branches,
+            else_branch,
+        } => {
             for (_, block) in branches {
                 for s in block {
                     assigned_in_statement(s, names);
@@ -34,7 +37,12 @@ fn assigned_in_statement(stmt: &Statement, names: &mut HashSet<String>) {
                 assigned_in_statement(s, names);
             }
         }
-        Statement::ForIn { body, key_name, value_name, .. } => {
+        Statement::ForIn {
+            body,
+            key_name,
+            value_name,
+            ..
+        } => {
             names.insert(key_name.clone());
             if let Some(v) = value_name {
                 names.insert(v.clone());
@@ -77,7 +85,10 @@ fn collect_member_pairs_stmt(
         | Statement::Expression(value) => {
             collect_member_pairs_expr(value, assigned, seen, pairs);
         }
-        Statement::If { branches, else_branch } => {
+        Statement::If {
+            branches,
+            else_branch,
+        } => {
             for (_, block) in branches {
                 for s in block {
                     collect_member_pairs_stmt(s, assigned, seen, pairs);
@@ -95,11 +106,7 @@ fn collect_member_pairs_stmt(
                 collect_member_pairs_stmt(s, assigned, seen, pairs);
             }
         }
-        Statement::ForIn {
-            iterable,
-            body,
-            ..
-        } => {
+        Statement::ForIn { iterable, body, .. } => {
             collect_member_pairs_expr(iterable, assigned, seen, pairs);
             for s in body {
                 collect_member_pairs_stmt(s, assigned, seen, pairs);

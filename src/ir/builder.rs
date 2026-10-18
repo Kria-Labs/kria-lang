@@ -108,14 +108,11 @@ impl IrBuilder {
         if !self.is_block_sealed(module, block) {
             if self.ssa_vars.contains_key(name) {
                 let phi_result = self.fresh_value();
-                self.function_mut(module)
-                    .block_mut(block)
-                    .phis
-                    .push(IrPhi {
-                        result: phi_result,
-                        var_name: name.to_string(),
-                        incoming: Vec::new(),
-                    });
+                self.function_mut(module).block_mut(block).phis.push(IrPhi {
+                    result: phi_result,
+                    var_name: name.to_string(),
+                    incoming: Vec::new(),
+                });
                 self.block_ssa
                     .entry(block)
                     .or_default()
@@ -132,7 +129,12 @@ impl IrBuilder {
 
     pub fn write_local_ssa(&mut self, name: &str, value: ValueId) {
         let block = self.current_block;
-        if self.block_ssa.get(&block).map(|b| b.sealed).unwrap_or(false) {
+        if self
+            .block_ssa
+            .get(&block)
+            .map(|b| b.sealed)
+            .unwrap_or(false)
+        {
             if let Some(var) = self.ssa_vars.get_mut(name) {
                 var.current = value;
             } else {
@@ -164,7 +166,10 @@ impl IrBuilder {
     }
 
     pub fn seal_block(&mut self, module: &mut IrModule, block: BlockId) {
-        let preds: Vec<BlockId> = module.functions[self.func_id.0 as usize].block(block).preds.clone();
+        let preds: Vec<BlockId> = module.functions[self.func_id.0 as usize]
+            .block(block)
+            .preds
+            .clone();
         let incomplete: HashMap<String, ValueId> = self
             .block_ssa
             .get(&block)
@@ -200,7 +205,9 @@ impl IrBuilder {
             }
         }
 
-        module.functions[self.func_id.0 as usize].block_mut(block).sealed = true;
+        module.functions[self.func_id.0 as usize]
+            .block_mut(block)
+            .sealed = true;
         if let Some(bs) = self.block_ssa.get_mut(&block) {
             bs.sealed = true;
             bs.incomplete_phis.clear();

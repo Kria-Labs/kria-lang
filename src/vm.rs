@@ -151,7 +151,11 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "{}", s),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::Null => write!(f, "null"),
-            Value::Function { bytecode_offset, num_params, upvalues } => {
+            Value::Function {
+                bytecode_offset,
+                num_params,
+                upvalues,
+            } => {
                 write!(
                     f,
                     "<function at {:x}({} params, {} upvalues)>",
@@ -210,12 +214,7 @@ fn arc_key(key: &str) -> Arc<str> {
 fn object_get(obj: &Value, key: &str) -> Value {
     match obj {
         Value::Null => Value::Null,
-        Value::Object(o) => o
-            .fields
-            .borrow()
-            .get(key)
-            .cloned()
-            .unwrap_or(Value::Null),
+        Value::Object(o) => o.fields.borrow().get(key).cloned().unwrap_or(Value::Null),
         _ => Value::Null,
     }
 }
@@ -233,12 +232,14 @@ fn object_get_const_cached(
             let cache_key = (ptr, key_idx);
             if let Some(&field_idx) = cache.get(&cache_key) {
                 let fields = o.fields.borrow();
-                if let Some((_, v)) = fields.get_index(field_idx) {
-                    return v.clone();
+                if let Some((cached_key, value)) = fields.get_index(field_idx) {
+                    if cached_key.as_ref() == key {
+                        return value.clone();
+                    }
                 }
                 cache.remove(&cache_key);
             }
-            let fields = o.fields.borrow_mut();
+            let fields = o.fields.borrow();
             if let Some((idx, _, v)) = fields.get_full(key) {
                 cache.insert(cache_key, idx);
                 v.clone()
@@ -325,7 +326,7 @@ fn expect_array(val: Value) -> Result<Rc<ArrayData>, String> {
 
 pub struct CallFrame {
     return_addr: usize,
-    locals_start: usize,  // Index where local variables start in stack
+    locals_start: usize, // Index where local variables start in stack
     upvalues: Vec<Value>,
 }
 
@@ -348,7 +349,9 @@ impl VM {
 
     #[inline(always)]
     fn pop(&mut self) -> Result<Value, String> {
-        self.stack.pop().ok_or_else(|| "Stack underflow".to_string())
+        self.stack
+            .pop()
+            .ok_or_else(|| "Stack underflow".to_string())
     }
 
     #[inline(always)]
@@ -392,6 +395,7 @@ impl VM {
                         // Restore previous frame
                         ip = frame.return_addr;
                         // Push return value back onto stack
+                        self.stack.truncate(frame.locals_start);
                         self.stack.push(return_value);
                     } else {
                         // Top-level return, just exit
@@ -401,7 +405,7 @@ impl VM {
                 OP_LOAD_LOCAL => {
                     let offset = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
-                    
+
                     if let Some(frame) = self.call_stack.last() {
                         let idx = frame.locals_start + offset;
                         if idx < self.stack.len() {
@@ -417,7 +421,7 @@ impl VM {
                     let offset = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     let val = self.pop()?;
-                    
+
                     if let Some(frame) = self.call_stack.last() {
                         let idx = frame.locals_start + offset;
                         if idx < self.stack.len() {
@@ -448,8 +452,9 @@ impl VM {
 
                         let value = match kind {
                             CAPTURE_LOCAL => {
-                                let frame = parent_frame
-                                    .ok_or_else(|| "Closure capture requires active call frame".to_string())?;
+                                let frame = parent_frame.ok_or_else(|| {
+                                    "Closure capture requires active call frame".to_string()
+                                })?;
                                 let idx = frame.locals_start + index;
                                 if idx >= self.stack.len() {
                                     return Err("Closure local capture out of bounds".to_string());
@@ -457,11 +462,12 @@ impl VM {
                                 self.stack[idx].clone()
                             }
                             CAPTURE_UPVALUE => {
-                                let frame = parent_frame
-                                    .ok_or_else(|| "Closure capture requires active call frame".to_string())?;
-                                frame.upvalues.get(index)
-                                    .cloned()
-                                    .ok_or_else(|| "Closure upvalue capture out of bounds".to_string())?
+                                let frame = parent_frame.ok_or_else(|| {
+                                    "Closure capture requires active call frame".to_string()
+                                })?;
+                                frame.upvalues.get(index).cloned().ok_or_else(|| {
+                                    "Closure upvalue capture out of bounds".to_string()
+                                })?
                             }
                             _ => return Err(format!("Unknown capture kind: {}", kind)),
                         };
@@ -477,25 +483,29 @@ impl VM {
                 OP_CALL_FUNCTION => {
                     let num_args = Bytecode::read_u32(code, ip) as u32;
                     ip += 4;
-                    
+
                     let func = self.pop()?;
-                    
+
                     match func {
-                        Value::Function { bytecode_offset, num_params, upvalues } => {
+                        Value::Function {
+                            bytecode_offset,
+                            num_params,
+                            upvalues,
+                        } => {
                             if num_params != num_args {
                                 return Err(format!(
                                     "Function expects {} arguments, got {}",
                                     num_params, num_args
                                 ));
                             }
-                            
+
                             let locals_start = self.stack.len() - num_args as usize;
                             let frame = CallFrame {
                                 return_addr: ip,
                                 locals_start,
                                 upvalues,
                             };
-                            
+
                             self.call_stack.push(frame);
                             ip = bytecode_offset;
                         }
@@ -507,7 +517,9 @@ impl VM {
                     ip += 4;
 
                     if let Some(frame) = self.call_stack.last() {
-                        let val = frame.upvalues.get(index)
+                        let val = frame
+                            .upvalues
+                            .get(index)
                             .cloned()
                             .ok_or_else(|| "Upvalue index out of bounds".to_string())?;
                         self.stack.push(val);
@@ -541,7 +553,9 @@ impl VM {
                     let global = unsafe { self.global_unchecked(idx) };
                     if let Value::Number(n) = *global {
                         if n < limit {
-                            unsafe { self.set_global_unchecked(idx, Value::Number(n + 1)); }
+                            unsafe {
+                                self.set_global_unchecked(idx, Value::Number(n + 1));
+                            }
                             ip = loop_start;
                         }
                     } else {
@@ -597,7 +611,9 @@ impl VM {
                     debug_assert!(idx < globals_len);
                     let global = unsafe { self.global_unchecked(idx) };
                     if let Value::Number(n) = *global {
-                        unsafe { self.set_global_unchecked(idx, Value::Number(n + rhs)); }
+                        unsafe {
+                            self.set_global_unchecked(idx, Value::Number(n + rhs));
+                        }
                     } else {
                         return Err("AddGlobal expects number".to_string());
                     }
@@ -609,7 +625,9 @@ impl VM {
                     debug_assert!(idx < globals_len);
                     let global = unsafe { self.global_unchecked(idx) };
                     if let Value::Number(n) = *global {
-                        unsafe { self.set_global_unchecked(idx, Value::Number(n + 1)); }
+                        unsafe {
+                            self.set_global_unchecked(idx, Value::Number(n + 1));
+                        }
                     } else {
                         return Err("IncGlobal expects number".to_string());
                     }
@@ -618,14 +636,17 @@ impl VM {
                     let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     debug_assert!(idx < globals_len);
-                    self.stack.push(unsafe { self.global_unchecked(idx).clone() });
+                    self.stack
+                        .push(unsafe { self.global_unchecked(idx).clone() });
                 }
                 OP_STORE_GLOBAL => {
                     let idx = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
                     ip += 4;
                     let val = self.pop()?;
                     debug_assert!(idx < globals_len);
-                    unsafe { self.set_global_unchecked(idx, val); }
+                    unsafe {
+                        self.set_global_unchecked(idx, val);
+                    }
                 }
                 OP_JUMP => {
                     ip = unsafe { Bytecode::read_u32_unchecked(code, ip) } as usize;
@@ -659,14 +680,17 @@ impl VM {
                             self.stack.push(Value::Number(l + r));
                         }
                         (Value::String(l), Value::String(r)) => {
-                            let mut s =
-                                String::with_capacity(l.len() + r.len());
+                            let mut s = String::with_capacity(l.len() + r.len());
                             s.push_str(&l);
                             s.push_str(&r);
                             self.stack.push(Value::String(Arc::from(s)));
                         }
-                        (l, r) => return Err(format!(
-                            "Add requires two numbers or two strings, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!(
+                                "Add requires two numbers or two strings, found {:?} and {:?}",
+                                l, r
+                            ))
+                        }
                     }
                 }
                 OP_SUBTRACT => {
@@ -676,8 +700,12 @@ impl VM {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Number(l - r));
                         }
-                        (l, r) => return Err(format!(
-                            "Subtract requires two numbers, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!(
+                                "Subtract requires two numbers, found {:?} and {:?}",
+                                l, r
+                            ))
+                        }
                     }
                 }
                 OP_MULTIPLY => {
@@ -687,8 +715,12 @@ impl VM {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Number(l * r));
                         }
-                        (l, r) => return Err(format!(
-                            "Multiply requires two numbers, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!(
+                                "Multiply requires two numbers, found {:?} and {:?}",
+                                l, r
+                            ))
+                        }
                     }
                 }
                 OP_DIVIDE => {
@@ -696,11 +728,17 @@ impl VM {
                     let left = self.pop()?;
                     match (left, right) {
                         (Value::Number(l), Value::Number(r)) => {
-                            if r == 0 { return Err("Division by zero".to_string()); }
+                            if r == 0 {
+                                return Err("Division by zero".to_string());
+                            }
                             self.stack.push(Value::Number(l / r));
                         }
-                        (l, r) => return Err(format!(
-                            "Divide requires two numbers, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!(
+                                "Divide requires two numbers, found {:?} and {:?}",
+                                l, r
+                            ))
+                        }
                     }
                 }
                 OP_EQUALS => {
@@ -720,8 +758,12 @@ impl VM {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l > r));
                         }
-                        (l, r) => return Err(format!(
-                            "Greater requires numbers, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!(
+                                "Greater requires numbers, found {:?} and {:?}",
+                                l, r
+                            ))
+                        }
                     }
                 }
                 OP_LESS => {
@@ -731,8 +773,9 @@ impl VM {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l < r));
                         }
-                        (l, r) => return Err(format!(
-                            "Less requires numbers, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!("Less requires numbers, found {:?} and {:?}", l, r))
+                        }
                     }
                 }
                 OP_GREATER_EQUAL => {
@@ -742,8 +785,12 @@ impl VM {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l >= r));
                         }
-                        (l, r) => return Err(format!(
-                            "GreaterEqual requires numbers, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!(
+                                "GreaterEqual requires numbers, found {:?} and {:?}",
+                                l, r
+                            ))
+                        }
                     }
                 }
                 OP_LESS_EQUAL => {
@@ -753,8 +800,12 @@ impl VM {
                         (Value::Number(l), Value::Number(r)) => {
                             self.stack.push(Value::Boolean(l <= r));
                         }
-                        (l, r) => return Err(format!(
-                            "LessEqual requires numbers, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!(
+                                "LessEqual requires numbers, found {:?} and {:?}",
+                                l, r
+                            ))
+                        }
                     }
                 }
                 OP_AND => {
@@ -764,8 +815,9 @@ impl VM {
                         (Value::Boolean(l), Value::Boolean(r)) => {
                             self.stack.push(Value::Boolean(l && r));
                         }
-                        (l, r) => return Err(format!(
-                            "And requires booleans, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!("And requires booleans, found {:?} and {:?}", l, r))
+                        }
                     }
                 }
                 OP_OR => {
@@ -775,8 +827,9 @@ impl VM {
                         (Value::Boolean(l), Value::Boolean(r)) => {
                             self.stack.push(Value::Boolean(l || r));
                         }
-                        (l, r) => return Err(format!(
-                            "Or requires booleans, found {:?} and {:?}", l, r)),
+                        (l, r) => {
+                            return Err(format!("Or requires booleans, found {:?} and {:?}", l, r))
+                        }
                     }
                 }
                 OP_NOT => {
@@ -955,11 +1008,13 @@ impl VM {
                 }
                 OP_IS_ARRAY => {
                     let val = self.pop()?;
-                    self.stack.push(Value::Boolean(matches!(val, Value::Array(_))));
+                    self.stack
+                        .push(Value::Boolean(matches!(val, Value::Array(_))));
                 }
                 OP_IS_OBJECT => {
                     let val = self.pop()?;
-                    self.stack.push(Value::Boolean(matches!(val, Value::Object(_))));
+                    self.stack
+                        .push(Value::Boolean(matches!(val, Value::Object(_))));
                 }
                 OP_MEMBER_LENGTH => {
                     let val = self.pop()?;
@@ -1055,27 +1110,28 @@ impl VM {
                     // Read type mask
                     let type_mask = code[ip];
                     ip += 1;
-                    
+
                     // Pop prompt from stack
                     let prompt = self.pop()?;
                     let prompt_str = match prompt {
                         Value::String(s) => s.to_string(),
                         _ => return Err("Input prompt must be a string".to_string()),
                     };
-                    
+
                     // Print prompt
                     print!("{}", prompt_str);
                     use std::io::{self, Write};
                     let _ = io::stdout().flush();
-                    
+
                     // Read input with retry loop
                     let has_str = (type_mask & 0x01) != 0;
                     let has_int = (type_mask & 0x02) != 0;
                     let has_float = (type_mask & 0x04) != 0;
-                    
+
                     let value = loop {
                         let mut buffer = String::new();
-                        std::io::stdin().read_line(&mut buffer)
+                        std::io::stdin()
+                            .read_line(&mut buffer)
                             .map_err(|e| format!("Input error: {}", e))?;
                         let trimmed = buffer.trim().to_string();
 
@@ -1085,14 +1141,14 @@ impl VM {
                                 break Value::Number(num);
                             }
                         }
-                        
+
                         // Try float if permitted (and not already parsed as int)
                         if has_float && trimmed.parse::<i64>().is_err() {
                             if let Ok(num) = trimmed.parse::<f64>() {
                                 break Value::Number(num as i64);
                             }
                         }
-                        
+
                         // Try string if permitted and not numeric
                         if has_str {
                             if trimmed.parse::<i64>().is_err() && trimmed.parse::<f64>().is_err() {
@@ -1100,18 +1156,24 @@ impl VM {
                                 break Value::String(Arc::from(trimmed));
                             }
                         }
-                        
+
                         // Invalid input, print error and retry
                         eprint!("Invalid input. Expected: ");
                         let mut expected = Vec::new();
-                        if has_str { expected.push("string"); }
-                        if has_int { expected.push("integer"); }
-                        if has_float { expected.push("float"); }
+                        if has_str {
+                            expected.push("string");
+                        }
+                        if has_int {
+                            expected.push("integer");
+                        }
+                        if has_float {
+                            expected.push("float");
+                        }
                         eprintln!("{}", expected.join(" or "));
                         eprint!("Try again: ");
                         let _ = io::stderr().flush();
                     };
-                    
+
                     self.stack.push(value);
                 }
                 OP_TYPE => {
@@ -1148,5 +1210,49 @@ impl VM {
         }
 
         Ok(ip)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::Compiler;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    #[test]
+    fn cached_object_get_survives_removing_an_earlier_field() {
+        let object = new_object();
+        object_set(&object, "a", Value::Number(1)).unwrap();
+        object_set(&object, "b", Value::Number(2)).unwrap();
+        object_set(&object, "c", Value::Number(3)).unwrap();
+
+        let mut cache = ObjectGetCache::new();
+        assert_eq!(
+            object_get_const_cached(&mut cache, &object, 7, "b"),
+            Value::Number(2)
+        );
+        object_delete(&object, "a").unwrap();
+
+        assert_eq!(
+            object_get_const_cached(&mut cache, &object, 7, "b"),
+            Value::Number(2)
+        );
+    }
+
+    #[test]
+    fn function_returns_release_arguments_and_locals_from_stack() {
+        let source = "fn f(a) {\n set b = a + 1\n return b\n}\nset i = 0\nwhile (i < 100) {\n f(i)\n set i = i + 1\n}";
+        let tokens = Lexer::new(source).tokenize();
+        let mut parser = Parser::new(tokens);
+        let statements = parser.parse().expect("parse");
+        let mut compiler = Compiler::new();
+        compiler.compile_module(&statements).expect("compile");
+        let bytecode = compiler.finish_bytecode();
+
+        let mut vm = VM::new();
+        vm.execute(&bytecode).expect("execute");
+
+        assert!(vm.stack.is_empty());
     }
 }
