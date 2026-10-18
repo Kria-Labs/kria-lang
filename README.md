@@ -106,12 +106,40 @@ Source (.krx) → Lexer → Parser → Compiler → Bytecode → Stack VM
 
 ## Benchmarks
 
+The benchmark suite requires Node.js 16.6+ and compares equivalent Kria,
+Node.js, and Python implementations for numeric work, control flow, calls,
+closures, collections, and strings at two workload sizes. Python is optional;
+missing runtimes are reported as skipped. Workload order is randomized,
+every run's exit status and integer result are validated, and raw samples plus
+a JSON summary are saved under `benchmarks/results/`.
+The primary workload timing is measured in-process to exclude process startup:
+Node.js and Python time the workload directly, while a small Rust harness times
+Kria VM execution. Kria source compilation, end-to-end process time, and a
+minimal startup baseline are reported separately.
+
 ```bash
-cargo build --release
-./benchmarks/benchmarks.sh
+node benchmarks/run.mjs
+# or: ./benchmarks/benchmarks.sh
 ```
 
-Results are written to [`benchmarks/benchmark_results.txt`](benchmarks/benchmark_results.txt). Override warmup and runs with `BENCH_WARMUP=3 BENCH_RUNS=10`.
+On Windows PowerShell, run `.\benchmarks\benchmarks.ps1`.
+The runner builds Kria in release mode unless `--no-build` is provided.
+
+By default the runner uses 2 warmups and 7 measured runs. For a quick check:
+
+```bash
+node benchmarks/run.mjs --sizes small --warmup 0 --runs 1
+```
+
+Options include `--sizes small,large`, `--languages kria,node,python`,
+`--warmup N`, `--runs N`, and `--seed N`. Set `BENCH_PYTHON` to select a Python
+interpreter, `BENCH_KRIA` to choose the Kria startup-baseline executable, or
+`BENCH_KRIA_BENCH` to choose the timed Kria harness. Results include median,
+p90, median absolute deviation (MAD), raw per-run timings, compile/process
+times, runtime versions, host details, and binary/suite SHA-256 hashes. A
+speedup greater than `1x` means that runtime executed the same workload faster
+than Kria; unlike workloads are not averaged into one score. Process startup is
+visible in the separate process-time column and startup-baseline row.
 
 ---
 
