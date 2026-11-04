@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="kria.png" alt="Kria" width="100%">
+  <img src="kria.png" alt="Kria" width="80%">
 </p>
 
 ---
@@ -18,6 +18,9 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#language-overview">Language</a> ·
   <a href="#examples">Examples</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#benchmarks">Benchmarks</a> ·
+  <a href="#install-binary">Install</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="#license">License</a>
 </p>
