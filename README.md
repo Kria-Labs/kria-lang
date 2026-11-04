@@ -2,6 +2,8 @@
   <img src="kria.png" alt="Kria" width="100%">
 </p>
 
+---
+
 <p align="center">
   <img src="kria-ico.png" alt="Kria" width="140">
 </p>
