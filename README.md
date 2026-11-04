@@ -18,6 +18,10 @@
 
 ---
 
+<p align="center">
+  <img src="Kria-cool.png" alt="Kria" width="100%">
+</p>
+
 ## Quick start
 
 **Requirements:** [Rust](https://rustup.rs/) (2021 edition)
