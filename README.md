@@ -1,10 +1,4 @@
 <p align="center">
-  <img src="kria.png" alt="Kria" width="80%">
-</p>
-
----
-
-<p align="center">
   <img src="kria-ico.png" alt="Kria" width="140">
 </p>
 
@@ -13,6 +7,12 @@
 <p align="center">
   A small, fast programming language — Rust bytecode VM, <code>.krx</code> sources.
 </p>
+
+<p align="center">
+  <img src="kria.png" alt="Kria" width="80%">
+</p>
+
+---
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
