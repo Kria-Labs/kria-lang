@@ -19,7 +19,7 @@
 ---
 
 <p align="center">
-  <img src="Kria-cool.png" alt="Kria" width="100%">
+  <img src="Kria.png" alt="Kria" width="100%">
 </p>
 
 ## Quick start
