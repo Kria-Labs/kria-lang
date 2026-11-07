@@ -52,6 +52,21 @@ impl Parser {
     }
 
     pub fn parse(&mut self) -> Result<Vec<Statement>, String> {
+        if let Some(Token::InvalidCharacter {
+            character,
+            line,
+            column,
+        }) = self
+            .tokens
+            .iter()
+            .find(|token| matches!(token, Token::InvalidCharacter { .. }))
+        {
+            return Err(format!(
+                "Lexical error at line {}, column {}: unexpected character '{}'",
+                line, column, character
+            ));
+        }
+
         let mut statements = Vec::new();
 
         while self.current_token() != &Token::Eof {
@@ -96,6 +111,14 @@ impl Parser {
                 self.expect_statement_end()?;
                 Ok(Statement::Continue)
             }
+            Token::InvalidCharacter {
+                character,
+                line,
+                column,
+            } => Err(format!(
+                "Lexical error at line {}, column {}: unexpected character '{}'",
+                line, column, character
+            )),
             Token::Identifier(_)
             | Token::Number(_)
             | Token::Float(_)
@@ -647,6 +670,14 @@ impl Parser {
                 Ok(Expression::Literal(Literal::Float(value)))
             }
             Token::InvalidNumber(value) => Err(format!("Invalid numeric literal: {}", value)),
+            Token::InvalidCharacter {
+                character,
+                line,
+                column,
+            } => Err(format!(
+                "Lexical error at line {}, column {}: unexpected character '{}'",
+                line, column, character
+            )),
             Token::String(s) => {
                 let s_val = s.clone();
                 self.advance();
@@ -813,5 +844,15 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn rejects_unknown_characters_with_line_and_column() {
+        let tokens = Lexer::new("print(@42)").tokenize();
+        let error = Parser::new(tokens).parse().unwrap_err();
+        assert_eq!(
+            error,
+            "Lexical error at line 1, column 7: unexpected character '@'"
+        );
     }
 }

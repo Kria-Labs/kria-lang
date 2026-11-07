@@ -29,6 +29,11 @@ pub enum Token {
     Float(f64),
     InvalidNumber(String),
     String(String),
+    InvalidCharacter {
+        character: char,
+        line: usize,
+        column: usize,
+    },
 
     // Operators
     Plus,
@@ -68,6 +73,8 @@ pub struct Lexer<'a> {
     input: Peekable<Chars<'a>>,
     current: Option<char>,
     peeked: Option<char>,
+    line: usize,
+    column: usize,
 }
 
 impl<'a> Lexer<'a> {
@@ -79,6 +86,8 @@ impl<'a> Lexer<'a> {
             input: chars,
             current,
             peeked,
+            line: 1,
+            column: 1,
         }
     }
 
@@ -91,6 +100,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn advance(&mut self) {
+        if self.current == Some('\n') {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += 1;
+        }
         self.current = self.input.next();
         self.peeked = self.input.peek().copied();
     }
@@ -465,8 +480,15 @@ impl<'a> Lexer<'a> {
                         };
                     }
                     _ => {
+                        let character = ch;
+                        let line = self.line;
+                        let column = self.column;
                         self.advance();
-                        continue;
+                        return Token::InvalidCharacter {
+                            character,
+                            line,
+                            column,
+                        };
                     }
                 },
             }
@@ -543,5 +565,16 @@ mod tests {
         let tokens = lexer.tokenize();
         assert!(tokens.contains(&Token::InvalidNumber("9223372036854775808".to_string())));
         assert!(tokens.contains(&Token::InvalidNumber("1e999".to_string())));
+    }
+
+    #[test]
+    fn unknown_character_is_reported_with_position() {
+        let mut lexer = Lexer::new("set x = 1\nprint(@42)");
+        let tokens = lexer.tokenize();
+        assert!(tokens.contains(&Token::InvalidCharacter {
+            character: '@',
+            line: 2,
+            column: 7,
+        }));
     }
 }

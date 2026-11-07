@@ -593,6 +593,17 @@ fn parse_input_value(input: &str, has_str: bool, has_int: bool, has_float: bool)
     None
 }
 
+fn read_input_line<R: std::io::BufRead>(reader: &mut R) -> Result<String, String> {
+    let mut buffer = String::new();
+    let bytes_read = reader
+        .read_line(&mut buffer)
+        .map_err(|e| format!("Input error: {}", e))?;
+    if bytes_read == 0 {
+        return Err("Input error: end of file reached while waiting for input".to_string());
+    }
+    Ok(buffer.trim().to_string())
+}
+
 fn expect_array(val: Value) -> Result<Rc<ArrayData>, String> {
     match val {
         Value::Array(arr) => Ok(arr),
@@ -1560,13 +1571,10 @@ impl VM {
                     let has_str = (type_mask & 0x01) != 0;
                     let has_int = (type_mask & 0x02) != 0;
                     let has_float = (type_mask & 0x04) != 0;
+                    let mut stdin = std::io::stdin().lock();
 
                     let value = loop {
-                        let mut buffer = String::new();
-                        std::io::stdin()
-                            .read_line(&mut buffer)
-                            .map_err(|e| format!("Input error: {}", e))?;
-                        let trimmed = buffer.trim().to_string();
+                        let trimmed = read_input_line(&mut stdin)?;
 
                         if let Some(value) =
                             parse_input_value(&trimmed, has_str, has_int, has_float)
@@ -1782,6 +1790,23 @@ mod tests {
             Some(Value::String(StringValue::from("word")))
         );
         assert_eq!(parse_input_value("1e999", false, false, true), None);
+    }
+
+    #[test]
+    fn input_reader_returns_error_at_eof() {
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        let error = read_input_line(&mut empty).unwrap_err();
+        assert_eq!(
+            error,
+            "Input error: end of file reached while waiting for input"
+        );
+    }
+
+    #[test]
+    fn input_reader_reads_one_line_without_repeated_eof() {
+        let mut input = std::io::Cursor::new(b"42\n".to_vec());
+        assert_eq!(read_input_line(&mut input).unwrap(), "42");
+        assert!(read_input_line(&mut input).is_err());
     }
 
     #[test]
