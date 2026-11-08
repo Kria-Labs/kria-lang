@@ -32,6 +32,12 @@ pub enum SsaInstruction {
         left: ValueId,
         right: ValueId,
     },
+    BinaryInt {
+        dst: ValueId,
+        op: BinaryOperator,
+        left: ValueId,
+        right: ValueId,
+    },
     Print { value: ValueId },
     Input {
         dst: ValueId,
@@ -41,6 +47,11 @@ pub enum SsaInstruction {
     Call {
         dst: ValueId,
         callee: ValueId,
+        args: Vec<ValueId>,
+    },
+    CallDirect {
+        dst: ValueId,
+        function_index: u32,
         args: Vec<ValueId>,
     },
     MakeClosure {
@@ -140,6 +151,10 @@ pub enum SsaTerminator {
         then_block: BlockId,
         else_block: BlockId,
     },
+    TailCall {
+        function_index: u32,
+        args: Vec<ValueId>,
+    },
     Return(Option<ValueId>),
 }
 
@@ -204,6 +219,8 @@ pub struct ModuleContext {
     pub module_functions: Vec<SsaFunction>,
     pub imports: HashMap<String, HashMap<String, u32>>,
     pub next_function: u32,
+    pub function_globals: HashMap<String, u32>,
+    pub inline_functions: HashMap<String, (Vec<String>, Vec<Statement>)>,
 }
 
 impl ModuleContext {
@@ -225,6 +242,54 @@ pub struct ModuleLowerer {
 
 fn optimize_ssa_function(function: &mut SsaFunction) {
     for block in &mut function.blocks {
+        let mut copies = HashMap::<ValueId, ValueId>::new();
+        let mut optimized = Vec::with_capacity(block.instructions.len());
+        for mut instruction in block.instructions.drain(..) {
+            match &mut instruction {
+                SsaInstruction::Move { dst, src } => {
+                    if dst == src {
+                        continue;
+                    }
+                    copies.insert(*dst, *src);
+                }
+                SsaInstruction::Binary { left, right, .. } => {
+                    if let Some(source) = copies.get(left) {
+                        *left = *source;
+                    }
+                    if let Some(source) = copies.get(right) {
+                        *right = *source;
+                    }
+                }
+                SsaInstruction::BinaryInt { left, right, .. } => {
+                    if let Some(source) = copies.get(left) {
+                        *left = *source;
+                    }
+                    if let Some(source) = copies.get(right) {
+                        *right = *source;
+                    }
+                }
+                SsaInstruction::Call { callee, args, .. } => {
+                    if let Some(source) = copies.get(callee) {
+                        *callee = *source;
+                    }
+                    for arg in args {
+                        if let Some(source) = copies.get(arg) {
+                            *arg = *source;
+                        }
+                    }
+                }
+                SsaInstruction::CallDirect { args, .. } => {
+                    for arg in args {
+                        if let Some(source) = copies.get(arg) {
+                            *arg = *source;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            optimized.push(instruction);
+        }
+        block.instructions = optimized;
         block.instructions.retain(|instruction| {
             !matches!(
                 instruction,
@@ -334,8 +399,10 @@ impl FunctionLowerer {
             | SsaInstruction::Move { dst, .. }
             | SsaInstruction::Unary { dst, .. }
             | SsaInstruction::Binary { dst, .. }
+            | SsaInstruction::BinaryInt { dst, .. }
             | SsaInstruction::Input { dst, .. }
             | SsaInstruction::Call { dst, .. }
+            | SsaInstruction::CallDirect { dst, .. }
             | SsaInstruction::MakeClosure { dst, .. }
             | SsaInstruction::BuildArray { dst, .. }
             | SsaInstruction::BuildObject { dst, .. }
@@ -481,6 +548,28 @@ impl FunctionLowerer {
                 let _ = self.lower_expression(expression)?;
             }
             Statement::Return(expression) => {
+                if let Some(Expression::Call { callee, args }) = expression.as_ref() {
+                    if let Expression::Identifier(name) = callee.as_ref() {
+                        let function_index = self
+                            .module
+                            .context
+                            .borrow()
+                            .function_globals
+                            .get(name)
+                            .copied();
+                        if let Some(function_index) = function_index {
+                            let mut values = Vec::with_capacity(args.len());
+                            for arg in args {
+                                values.push(self.lower_expression(arg)?);
+                            }
+                            self.current_mut().terminator = SsaTerminator::TailCall {
+                                function_index,
+                                args: values,
+                            };
+                            return Ok(());
+                        }
+                    }
+                }
                 let value = match expression {
                     Some(expression) => Some(self.lower_expression(expression)?),
                     None => None,
@@ -638,6 +727,60 @@ impl FunctionLowerer {
             .get(name)
             .copied()
             .map(Variable::Global)
+    }
+
+    fn substitute_expression(
+        expression: &Expression,
+        params: &[String],
+        args: &[Expression],
+    ) -> Expression {
+        match expression {
+            Expression::Identifier(name) => {
+                if let Some(position) = params.iter().position(|param| param == name) {
+                    return args[position].clone();
+                }
+                expression.clone()
+            }
+            Expression::BinaryOp { left, op, right } => Expression::BinaryOp {
+                left: Box::new(Self::substitute_expression(left, params, args)),
+                op: *op,
+                right: Box::new(Self::substitute_expression(right, params, args)),
+            },
+            Expression::UnaryOp { op, expr } => Expression::UnaryOp {
+                op: *op,
+                expr: Box::new(Self::substitute_expression(expr, params, args)),
+            },
+            Expression::MemberAccess { object, member } => Expression::MemberAccess {
+                object: Box::new(Self::substitute_expression(object, params, args)),
+                member: member.clone(),
+            },
+            Expression::Index { object, index } => Expression::Index {
+                object: Box::new(Self::substitute_expression(object, params, args)),
+                index: Box::new(Self::substitute_expression(index, params, args)),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn try_inline_named_call(&mut self, name: &str, args: &[Expression]) -> Result<Option<ValueId>, String> {
+        let inline = {
+            let ctx = self.module.context.borrow();
+            ctx.inline_functions.get(name).cloned()
+        };
+        let Some((params, body)) = inline else {
+            return Ok(None);
+        };
+        if params.len() != args.len() || body.len() != 1 {
+            return Ok(None);
+        }
+        let Some(Statement::Return(Some(return_expression))) = body.first() else {
+            return Ok(None);
+        };
+        if matches!(return_expression, Expression::Call { .. }) {
+            return Ok(None);
+        }
+        let substituted = Self::substitute_expression(return_expression, &params, args);
+        Ok(Some(self.lower_expression(&substituted)?))
     }
 
     fn less_const_ident(condition: &Expression) -> Option<(&str, i64)> {
@@ -851,7 +994,7 @@ impl FunctionLowerer {
                     stack.push(then_block);
                     stack.push(else_block);
                 }
-                SsaTerminator::Fallthrough | SsaTerminator::Return(_) => {}
+                SsaTerminator::Fallthrough | SsaTerminator::Return(_) | SsaTerminator::TailCall { .. } => {}
             }
         }
         seen.into_iter().collect()
@@ -1247,6 +1390,17 @@ impl FunctionLowerer {
                 ctx.module_functions.resize(function_index as usize + 1, ssa_function.clone());
             }
             ctx.module_functions[function_index as usize] = ssa_function;
+            if self.is_module {
+                ctx.function_globals.insert(name.to_string(), function_index);
+            }
+            if self.is_module && body.len() == 1 {
+                if let Statement::Return(Some(_)) = &body[0] {
+                    ctx.inline_functions.insert(
+                        name.to_string(),
+                        (params.to_vec(), body.to_vec()),
+                    );
+                }
+            }
         }
 
         let dst = self.fresh_value();
@@ -1341,15 +1495,36 @@ impl FunctionLowerer {
                 Ok(dst)
             }
             Expression::BinaryOp { left, op, right } => {
+                let left_literal = match left.as_ref() {
+                    Expression::Literal(literal) => Some(literal),
+                    _ => None,
+                };
+                let right_literal = match right.as_ref() {
+                    Expression::Literal(literal) => Some(literal),
+                    _ => None,
+                };
                 let left = self.lower_expression(left)?;
                 let right = self.lower_expression(right)?;
                 let dst = self.fresh_value();
-                self.emit(SsaInstruction::Binary {
-                    dst,
-                    op: *op,
-                    left,
-                    right,
-                });
+                let operands_are_int_literals = matches!(
+                    (left_literal, right_literal),
+                    (Some(Literal::Number(_)), Some(Literal::Number(_)))
+                );
+                if operands_are_int_literals {
+                    self.emit(SsaInstruction::BinaryInt {
+                        dst,
+                        op: *op,
+                        left,
+                        right,
+                    });
+                } else {
+                    self.emit(SsaInstruction::Binary {
+                        dst,
+                        op: *op,
+                        left,
+                        right,
+                    });
+                }
                 Ok(dst)
             }
             Expression::FunctionCall { name, args } => {
@@ -1406,6 +1581,9 @@ impl FunctionLowerer {
                     _ => {}
                 }
                 let callee_var = self.resolve_variable(name);
+                if let Some(inlined) = self.try_inline_named_call(name, args)? {
+                    return Ok(inlined);
+                }
                 let callee = self.fresh_value();
                 match callee_var {
                     Variable::Global(slot) => {
@@ -1423,7 +1601,20 @@ impl FunctionLowerer {
                     values.push(self.lower_expression(arg)?);
                 }
                 let dst = self.fresh_value();
-                self.emit(SsaInstruction::Call { dst, callee, args: values });
+                let function_index = if let Variable::Global(_) = callee_var {
+                    self.module.context.borrow().function_globals.get(name).copied()
+                } else {
+                    None
+                };
+                if let Some(function_index) = function_index {
+                    self.emit(SsaInstruction::CallDirect {
+                        dst,
+                        function_index,
+                        args: values,
+                    });
+                } else {
+                    self.emit(SsaInstruction::Call { dst, callee, args: values });
+                }
                 Ok(dst)
             }
             Expression::Call { callee, args } => {
@@ -1617,6 +1808,24 @@ mod tests {
             Value::String(text) => assert_eq!(text.as_str(), "xxxx"),
             other => panic!("expected string, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn register_direct_call_and_inline_return_expression() {
+        let value = global_value(
+            "fn add_three(x) {\nreturn x + 3\n}\nset out = add_three(9)\n",
+            "out",
+        );
+        assert!(matches!(value, Value::Number(12)));
+    }
+
+    #[test]
+    fn register_tail_call_reuses_register_frame() {
+        let value = global_value(
+            "fn down(n) {\nif (n < 1) { return 0 }\nreturn down(n - 1)\n}\nset out = down(5)\n",
+            "out",
+        );
+        assert!(matches!(value, Value::Number(0)));
     }
 
     #[test]

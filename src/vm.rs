@@ -871,6 +871,19 @@ impl RegisterVM {
                         };
                         self.frames[frame_base + dst.0 as usize] = result;
                     }
+                    SsaInstruction::BinaryInt { dst, op, left, right } => {
+                        let left_index = frame_base + left.0 as usize;
+                        let right_index = frame_base + right.0 as usize;
+                        let dst_index = frame_base + dst.0 as usize;
+                        let result = match (&self.frames[left_index], &self.frames[right_index]) {
+                            (Value::Number(left), Value::Number(right)) => {
+                                apply_register_int_op(*op, *left, *right)
+                            }
+                            _ => Ok(Value::Null),
+                        }
+                        .map_err(|error| format!("Register VM integer operation failed: {:?}", error))?;
+                        self.frames[dst_index] = result;
+                    }
                     SsaInstruction::Binary { dst, op, left, right } => {
                         let left_index = frame_base + left.0 as usize;
                         let right_index = frame_base + right.0 as usize;
@@ -974,6 +987,35 @@ impl RegisterVM {
                                 },
                             }
                         };
+                    }
+                    SsaInstruction::CallDirect {
+                        dst,
+                        function_index,
+                        args: arg_values,
+                    } => {
+                        let mut call_args = std::mem::take(&mut self.call_args);
+                        call_args.clear();
+                        call_args.reserve(arg_values.len());
+                        for value in arg_values {
+                            call_args.push(self.frames[frame_base + value.0 as usize].clone());
+                        }
+                        let callee_function = functions.get(*function_index as usize).ok_or_else(|| {
+                            format!("Invalid register function index {}", function_index)
+                        })?;
+                        let caller_end = frame_base
+                            + function.max_registers as usize
+                            + function.local_count as usize;
+                        let empty_captures = Rc::new(RefCell::new(Vec::new()));
+                        let result = self.execute_function(
+                            callee_function,
+                            caller_end,
+                            &call_args,
+                            &empty_captures,
+                            functions,
+                        )?;
+                        self.frames.truncate(caller_end);
+                        self.call_args = call_args;
+                        self.frames[frame_base + dst.0 as usize] = result.unwrap_or(Value::Null);
                     }
                     SsaInstruction::Call {
                         dst,
@@ -1345,6 +1387,30 @@ impl RegisterVM {
                 }
                 SsaTerminator::Return(value) => {
                     return Ok(value.map(|value| self.frames[frame_base + value.0 as usize].clone()));
+                }
+                SsaTerminator::TailCall {
+                    function_index,
+                    args,
+                } => {
+                    let callee_function = functions.get(*function_index as usize).ok_or_else(|| {
+                        format!("Invalid register function index {}", function_index)
+                    })?;
+                    let mut tail_args = std::mem::take(&mut self.call_args);
+                    tail_args.clear();
+                    tail_args.reserve(args.len());
+                    for value in args {
+                        tail_args.push(self.frames[frame_base + value.0 as usize].clone());
+                    }
+                    let empty_captures = Rc::new(RefCell::new(Vec::new()));
+                    let result = self.execute_function(
+                        callee_function,
+                        frame_base,
+                        &tail_args,
+                        &empty_captures,
+                        functions,
+                    )?;
+                    self.call_args = tail_args;
+                    return Ok(result);
                 }
             }
         }
