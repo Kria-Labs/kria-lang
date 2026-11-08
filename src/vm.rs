@@ -1,4 +1,5 @@
 use crate::bytecode::*;
+use crate::ast::BinaryOperator;
 use indexmap::IndexMap;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -219,6 +220,29 @@ pub(crate) fn apply_numeric_op(
         _ => Err(NumericError::NotNumeric),
     }
 }
+
+#[inline(always)]
+fn apply_register_int_op(
+    op: crate::ast::BinaryOperator,
+    left: i64,
+    right: i64,
+) -> Result<Value, NumericError> {
+    match op {
+        BinaryOperator::Add => Ok(Value::Number(left.wrapping_add(right))),
+        BinaryOperator::Subtract => Ok(Value::Number(left.wrapping_sub(right))),
+        BinaryOperator::Multiply => Ok(Value::Number(left.wrapping_mul(right))),
+        BinaryOperator::Divide if right == 0 => Err(NumericError::DivisionByZero),
+        BinaryOperator::Divide => Ok(Value::Number(left / right)),
+        BinaryOperator::Equals => Ok(Value::Boolean(left == right)),
+        BinaryOperator::NotEquals => Ok(Value::Boolean(left != right)),
+        BinaryOperator::GreaterThan => Ok(Value::Boolean(left > right)),
+        BinaryOperator::LessThan => Ok(Value::Boolean(left < right)),
+        BinaryOperator::GreaterOrEqual => Ok(Value::Boolean(left >= right)),
+        BinaryOperator::LessOrEqual => Ok(Value::Boolean(left <= right)),
+        BinaryOperator::And | BinaryOperator::Or => Err(NumericError::NotNumeric),
+    }
+}
+
 
 fn apply_mixed_numeric_op(
     op: NumericOp,
@@ -686,9 +710,12 @@ fn less_than_const(value: &Value, limit: i64) -> Result<bool, String> {
     }
 }
 
+
 pub struct RegisterVM {
     globals: Vec<Value>,
     frames: Vec<Value>,
+    call_args: Vec<Value>,
+    object_get_cache: HashMap<(usize, String), (u64, Value)>,
 }
 
 impl RegisterVM {
@@ -696,6 +723,8 @@ impl RegisterVM {
         Self {
             globals: Vec::new(),
             frames: Vec::new(),
+            call_args: Vec::new(),
+            object_get_cache: HashMap::new(),
         }
     }
 
@@ -706,6 +735,8 @@ impl RegisterVM {
     pub fn execute(&mut self, module: &crate::register::SsaModule) -> Result<(), String> {
         self.globals = vec![Value::Null; module.globals.len()];
         self.frames.clear();
+        self.call_args.clear();
+        self.object_get_cache.clear();
         let empty = Rc::new(RefCell::new(Vec::new()));
         self.execute_function(&module.entry, 0, &[], &empty, &module.functions)?;
         Ok(())
@@ -879,6 +910,20 @@ impl RegisterVM {
                                 };
                                 self.frames[dst_index] = Value::String(joined);
                             }
+                            _ if matches!(
+                                (&self.frames[left_index], &self.frames[right_index]),
+                                (Value::Number(_), Value::Number(_))
+                            ) =>
+                            {
+                                let result = match (&self.frames[left_index], &self.frames[right_index]) {
+                                    (Value::Number(left), Value::Number(right)) => {
+                                        apply_register_int_op(*op, *left, *right)
+                                    }
+                                    _ => unreachable!(),
+                                }
+                                .map_err(|error| format!("Register VM integer operation failed: {:?}", error))?;
+                                self.frames[dst_index] = result;
+                            }
                             _ => {
                                 let numeric_op = match op {
                                     BinaryOperator::Add => NumericOp::Add,
@@ -936,10 +981,12 @@ impl RegisterVM {
                         args: arg_values,
                     } => {
                         let callee_value = self.frames[frame_base + callee.0 as usize].clone();
-                        let call_args: Vec<Value> = arg_values
-                            .iter()
-                            .map(|value| self.frames[frame_base + value.0 as usize].clone())
-                            .collect();
+                        let mut call_args = std::mem::take(&mut self.call_args);
+                        call_args.clear();
+                        call_args.reserve(arg_values.len());
+                        for value in arg_values {
+                            call_args.push(self.frames[frame_base + value.0 as usize].clone());
+                        }
                         let result = match callee_value {
                             Value::RegisterFunction {
                                 function_index,
@@ -963,6 +1010,7 @@ impl RegisterVM {
                             }
                             _ => None,
                         };
+                        self.call_args = call_args;
                         self.frames[frame_base + dst.0 as usize] = result.unwrap_or(Value::Null);
                     }
                     SsaInstruction::MakeClosure {
@@ -1067,12 +1115,41 @@ impl RegisterVM {
                     }
                     SsaInstruction::PropertyGet { dst, object, member } => {
                         let value = match &self.frames[frame_base + object.0 as usize] {
-                            Value::Object(object) => object
-                                .fields
-                                .borrow()
-                                .get(member.as_str())
-                                .cloned()
-                                .unwrap_or(Value::Null),
+                            Value::Object(object) => {
+                                let object_id = Rc::as_ptr(object) as usize;
+                                let shape = object.shape_version.get();
+                                if let Some((cached_shape, cached_value)) =
+                                    self.object_get_cache.get(&(object_id, member.clone()))
+                                {
+                                    if *cached_shape == shape {
+                                        cached_value.clone()
+                                    } else {
+                                        let value = object
+                                            .fields
+                                            .borrow()
+                                            .get(member.as_str())
+                                            .cloned()
+                                            .unwrap_or(Value::Null);
+                                        self.object_get_cache.insert(
+                                            (object_id, member.clone()),
+                                            (shape, value.clone()),
+                                        );
+                                        value
+                                    }
+                                } else {
+                                    let value = object
+                                        .fields
+                                        .borrow()
+                                        .get(member.as_str())
+                                        .cloned()
+                                        .unwrap_or(Value::Null);
+                                    self.object_get_cache.insert(
+                                        (object_id, member.clone()),
+                                        (shape, value.clone()),
+                                    );
+                                    value
+                                }
+                            }
                             _ => Value::Null,
                         };
                         self.frames[frame_base + dst.0 as usize] = value;

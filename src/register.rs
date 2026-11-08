@@ -223,6 +223,17 @@ pub struct ModuleLowerer {
     scope_stack: std::rc::Rc<std::cell::RefCell<Vec<ScopeFrame>>>,
 }
 
+fn optimize_ssa_function(function: &mut SsaFunction) {
+    for block in &mut function.blocks {
+        block.instructions.retain(|instruction| {
+            !matches!(
+                instruction,
+                SsaInstruction::Move { dst, src } if dst == src
+            )
+        });
+    }
+}
+
 #[derive(Debug, Clone)]
 struct FunctionLowerer {
     module: ModuleLowerer,
@@ -261,10 +272,14 @@ impl ModuleLowerer {
         });
         let mut function = FunctionLowerer::new_module(self.clone());
         function.lower_statements(statements)?;
-        let entry = function.finish_function();
+        let mut entry = function.finish_function();
         self.scope_stack.borrow_mut().pop();
 
-        let ctx = self.context.borrow().clone();
+        let mut ctx = self.context.borrow().clone();
+        optimize_ssa_function(&mut entry);
+        for function in &mut ctx.module_functions {
+            optimize_ssa_function(function);
+        }
         Ok(SsaModule {
             constants: entry.constants.clone(),
             globals: ctx.globals,
