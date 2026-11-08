@@ -42,15 +42,19 @@ cargo build --release
 ./target/release/kria examples/13_imports/main.krx
 ```
 
-Files run with the Register VM by default. Set `KRIA_BACKEND=stack` to use
+Files run with the Register VM by default. Set `KRIA_BACKEND=jit` to use
+the native LLVM-based JIT compiler, or `KRIA_BACKEND=stack` to use
 the legacy stack-based bytecode VM:
 
 ```bash
-# macOS / Linux
+# macOS / Linux (LLVM JIT compiler)
+KRIA_BACKEND=jit ./target/release/kria program.krx
+
+# macOS / Linux (Stack VM)
 KRIA_BACKEND=stack ./target/release/kria program.krx
 
 # Windows PowerShell
-$env:KRIA_BACKEND="stack"
+$env:KRIA_BACKEND="jit"
 .\target\release\kria.exe program.krx
 ```
 

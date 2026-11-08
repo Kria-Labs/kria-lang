@@ -21,14 +21,23 @@ fn print_version() {
 
 fn run_file(filename: &str) -> Result<(), String> {
     let path = std::path::Path::new(filename);
-    if env::var("KRIA_BACKEND").unwrap_or_else(|_| "register".to_string()).to_lowercase() == "stack" {
-        let bytecode = compile_entry_file(path)?;
-        let mut vm = VM::new();
-        vm.execute(&bytecode)?;
-    } else {
-        let module = compile_register_entry_file(path)?;
-        let mut vm = RegisterVM::new();
-        vm.execute(&module)?;
+    let backend = env::var("KRIA_BACKEND").unwrap_or_else(|_| "register".to_string()).to_lowercase();
+    match backend.as_str() {
+        "stack" => {
+            let bytecode = compile_entry_file(path)?;
+            let mut vm = VM::new();
+            vm.execute(&bytecode)?;
+        }
+        "jit" | "llvm" => {
+            let module = compile_register_entry_file(path)?;
+            let mut jit = kria::jit::LlvmJit::new();
+            jit.execute(&module)?;
+        }
+        _ => {
+            let module = compile_register_entry_file(path)?;
+            let mut vm = RegisterVM::new();
+            vm.execute(&module)?;
+        }
     }
     Ok(())
 }

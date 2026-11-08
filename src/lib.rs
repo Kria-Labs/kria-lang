@@ -3,6 +3,7 @@ pub mod bytecode;
 pub mod compile_opt;
 pub mod compiler;
 pub mod ir;
+pub mod jit;
 pub mod lexer;
 pub mod modules;
 pub mod optimizer;
