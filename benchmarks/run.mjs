@@ -18,7 +18,7 @@ const scriptPath = fileURLToPath(import.meta.url);
 const benchmarkDir = dirname(scriptPath);
 const projectRoot = resolve(benchmarkDir, "..");
 const manifest = JSON.parse(readFileSync(join(benchmarkDir, "suite.json"), "utf8"));
-const defaults = { warmup: 2, runs: 7, sizes: ["small", "large"], languages: ["kria", "node", "python"] };
+const defaults = { warmup: 2, runs: 7, sizes: ["small", "large"], languages: ["register", "node", "python"] };
 
 function parseArguments(args) {
   const options = { ...defaults, build: true, seed: 20261018, output: null };
@@ -42,7 +42,7 @@ function parseArguments(args) {
   --warmup N                 Warmup runs per workload/runtime (default ${defaults.warmup})
   --runs N                   Measured runs (default ${defaults.runs})
   --sizes small,large        Workload sizes (default small,large)
-  --languages kria,node,python  Runtimes to compare
+  --languages register,stack,node,python  Runtimes to compare
   --seed N                   Deterministic run-order shuffle seed
   --output DIR               Result directory (default benchmarks/results/<timestamp>)
   --no-build                 Do not run cargo build --release`);
@@ -57,8 +57,8 @@ function parseArguments(args) {
   if (options.sizes.length === 0 || options.sizes.some((size) => !["small", "large"].includes(size))) {
     throw new Error("--sizes must contain small and/or large");
   }
-  if (options.languages.length === 0 || options.languages.some((language) => !["kria", "node", "python"].includes(language))) {
-    throw new Error("--languages must contain kria, node, and/or python");
+  if (options.languages.length === 0 || options.languages.some((language) => !["kria", "register", "stack", "node", "python"].includes(language))) {
+    throw new Error("--languages must contain kria, register, stack, node, and/or python");
   }
   return options;
 }
@@ -71,7 +71,7 @@ function runProcess(command, args, options = {}) {
     timeout: options.timeout ?? 120_000,
     maxBuffer: 4 * 1024 * 1024,
     windowsHide: true,
-    env: process.env,
+    env: options.env ?? process.env,
   });
   const elapsedNs = process.hrtime.bigint() - started;
   return { ...result, elapsedNs };
@@ -168,14 +168,14 @@ function runtimeInfo(name, executable, args = []) {
 }
 
 function resolveRuntimes(options) {
-  const selected = new Set(options.languages);
+  const selected = new Set(options.languages.map((language) => language === "kria" ? "register" : language));
   const runtimes = [];
   const missing = [];
   const kriaBinary = process.env.BENCH_KRIA ?? join(projectRoot, "target", "release", process.platform === "win32" ? "kria.exe" : "kria");
   const kriaBenchmarkBinary = process.env.BENCH_KRIA_BENCH
     ?? join(projectRoot, "target", "release", process.platform === "win32" ? "kria_bench.exe" : "kria_bench");
 
-  if (selected.has("kria")) {
+  if (selected.has("register") || selected.has("stack")) {
     if (options.build && !process.env.BENCH_KRIA_BENCH) {
       console.log("Building Kria release binary...");
       const build = runProcess("cargo", ["build", "--release"], { timeout: 600_000 });
@@ -183,10 +183,17 @@ function resolveRuntimes(options) {
     }
     if (!existsSync(kriaBinary)) throw new Error(`Kria binary not found: ${kriaBinary}`);
     if (!existsSync(kriaBenchmarkBinary)) throw new Error(`Kria benchmark runner not found: ${kriaBenchmarkBinary}`);
-    runtimes.push({
-      ...runtimeInfo("kria", kriaBinary),
+    if (selected.has("register")) runtimes.push({
+      ...runtimeInfo("register", kriaBinary),
       executionExecutable: kriaBenchmarkBinary,
       startupExecutable: kriaBinary,
+      backend: "register",
+    });
+    if (selected.has("stack")) runtimes.push({
+      ...runtimeInfo("stack", kriaBinary),
+      executionExecutable: kriaBenchmarkBinary,
+      startupExecutable: kriaBinary,
+      backend: "stack",
     });
   }
   if (selected.has("node")) runtimes.push(runtimeInfo("node", process.execPath));
@@ -214,10 +221,11 @@ function normalizeResult(stdout, label) {
 }
 
 function invoke(runtime, workload, iterations, kriaFile) {
-  if (runtime.name === "kria") {
+  if (runtime.name === "register" || runtime.name === "stack") {
     const result = runProcess(
       workload === "startup" ? runtime.startupExecutable : runtime.executionExecutable,
       [kriaFile],
+      { env: { ...process.env, KRIA_BACKEND: runtime.backend } },
     );
     if (workload !== "startup") {
       result.executionNs = readTimingMarker(result.stderr, "BENCH_EXECUTION_NS");
@@ -332,7 +340,7 @@ function main() {
         const iterations = workload.sizes[size];
         if (iterations === undefined) continue;
         let kriaFile = null;
-        if (runtimes.some((runtime) => runtime.name === "kria")) {
+        if (runtimes.some((runtime) => runtime.name === "register" || runtime.name === "stack")) {
           const templatePath = join(benchmarkDir, "kria", `${workload.id}.krx.in`);
           let template = templates.get(templatePath);
           if (template === undefined) {
@@ -444,16 +452,16 @@ function main() {
       summaries.push(row);
     }
     for (const row of summaries) {
-      const reference = summaries.find((other) => other.workload === row.workload && other.size === row.size && other.runtime === "kria");
-      if (row.runtime === "kria" || row.workload === "startup") {
-        row.speedup_vs_kria = null;
+      const reference = summaries.find((other) => other.workload === row.workload && other.size === row.size && other.runtime === "register");
+      if (row.runtime === "register" || row.workload === "startup") {
+        row.speedup_vs_register = null;
         continue;
       }
       if (!reference || reference.error || row.error || row.median_ms <= 0) {
-        row.speedup_vs_kria = null;
+        row.speedup_vs_register = null;
         row.comparison_note = "reference unavailable";
       } else {
-        row.speedup_vs_kria = Number((reference.median_ms / row.median_ms).toFixed(3));
+        row.speedup_vs_register = Number((reference.median_ms / row.median_ms).toFixed(3));
         row.comparison_note = "execution-time ratio";
       }
     }
@@ -477,15 +485,15 @@ function main() {
       measured_runs: options.runs,
       order_seed: options.seed,
       runtimes: runtimes.map(({ name, version }) => ({ name, version })),
-      rust_toolchain: runtimes.some((runtime) => runtime.name === "kria")
+      rust_toolchain: runtimes.some((runtime) => runtime.name === "register" || runtime.name === "stack")
         ? { cargo: getToolVersion("cargo", ["-V"]), rustc: getToolVersion("rustc", ["-V"]) }
         : null,
       skipped_runtimes: missing,
-      kria_binary_sha256: runtimes.find((runtime) => runtime.name === "kria")
-        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "kria").executable)).digest("hex")
+      kria_binary_sha256: runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack")
+        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack").executable)).digest("hex")
         : null,
-      kria_benchmark_runner_sha256: runtimes.find((runtime) => runtime.name === "kria")
-        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "kria").executionExecutable)).digest("hex")
+      kria_benchmark_runner_sha256: runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack")
+        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack").executionExecutable)).digest("hex")
         : null,
       workloads: selectedWorkloads,
       results: summaries,
@@ -493,13 +501,13 @@ function main() {
     };
     writeFileSync(summaryPath, `${JSON.stringify(metadata, null, 2)}\n`);
 
-    console.log("\nWorkload             Size     Runtime   Exec med(ms)  P90(ms)  MAD(ms)  Compile(ms)  Process(ms)  Speedup vs Kria");
+    console.log("\nWorkload             Size     Runtime   Exec med(ms)  P90(ms)  MAD(ms)  Compile(ms)  Process(ms)  Speedup vs Register");
     console.log("-".repeat(126));
     for (const row of summaries) {
       const medianText = row.median_ms === undefined ? "ERROR" : row.median_ms.toFixed(3);
       const p90Text = row.p90_ms === undefined ? "-" : row.p90_ms.toFixed(3);
       const madText = row.mad_ms === undefined ? "-" : row.mad_ms.toFixed(3);
-      const speedupText = row.speedup_vs_kria === null ? "-" : `${row.speedup_vs_kria}x`;
+      const speedupText = row.speedup_vs_register === null || row.speedup_vs_register === undefined ? "-" : `${row.speedup_vs_register}x`;
       const compileText = row.compile_median_ms === null || row.compile_median_ms === undefined ? "-" : row.compile_median_ms.toFixed(3);
       const processText = row.process_median_ms === undefined ? "-" : row.process_median_ms.toFixed(3);
       console.log(`${row.workload.padEnd(20)} ${row.size.padEnd(8)} ${row.runtime.padEnd(9)} ${medianText.padStart(12)} ${p90Text.padStart(8)} ${madText.padStart(8)} ${compileText.padStart(12)} ${processText.padStart(12)} ${speedupText.padStart(16)}`);

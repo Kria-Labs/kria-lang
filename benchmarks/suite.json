@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Equivalent Kria, Node.js, and Python workloads. All sizes are iteration counts.",
+  "description": "Equivalent Register VM, Stack VM, Node.js, and Python workloads. All sizes are iteration counts.",
   "workloads": [
     {
       "id": "arithmetic",

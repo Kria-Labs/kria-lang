@@ -139,8 +139,8 @@ Source (.krx) → Lexer → Parser → Compiler/IR lowering → SSA/module → R
 
 ## Benchmarks
 
-The benchmark suite requires Node.js 16.6+ and compares equivalent Kria,
-Node.js, and Python implementations for numeric work, control flow, calls,
+The benchmark suite requires Node.js 16.6+ and compares equivalent Register VM,
+Stack VM, Node.js, and Python implementations for numeric work, control flow, calls,
 closures, collections, and strings at two workload sizes. Python is optional;
 missing runtimes are reported as skipped. Workload order is randomized,
 every run's exit status and integer result are validated, and raw samples plus
@@ -164,7 +164,7 @@ By default the runner uses 2 warmups and 7 measured runs. For a quick check:
 node benchmarks/run.mjs --sizes small --warmup 0 --runs 1
 ```
 
-Options include `--sizes small,large`, `--languages kria,node,python`,
+Options include `--sizes small,large`, `--languages register,stack,node,python`,
 `--warmup N`, `--runs N`, and `--seed N`. Set `BENCH_PYTHON` to select a Python
 interpreter, `BENCH_KRIA` to choose the Kria startup-baseline executable, or
 `BENCH_KRIA_BENCH` to choose the timed Kria harness. Results include median,
