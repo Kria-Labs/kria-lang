@@ -11,11 +11,19 @@ Thank you for your interest in Kria. This document explains how to get set up, m
 ```bash
 cargo build
 cargo test
+cargo test --all-targets
 cargo build --release
 ./target/release/kria test.krx
 ```
 
 On Windows, run the built executable as `.\target\release\kria.exe test.krx`.
+
+Run the following checks before submitting a change:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+```
 
 4. Explore [`examples/`](examples/) to see language features in context.
 
@@ -25,17 +33,24 @@ On Windows, run the built executable as `.\target\release\kria.exe test.krx`.
 |------|---------|
 | `src/lexer.rs` | Tokenization |
 | `src/parser.rs` | AST / syntax |
-| `src/compiler.rs` | Bytecode generation and compilation pipeline |
-| `src/ir/` | IR lifting, optimization, and bytecode emission |
+| `src/compiler.rs` | Stack bytecode generation and compilation pipeline |
+| `src/ir/` | IR lifting, optimization, SSA utilities, and bytecode emission |
+| `src/register.rs` | Register/SSA lowering and Register VM instructions |
 | `src/optimizer.rs` | Bytecode peephole optimization |
-| `src/vm.rs` | Runtime |
+| `src/bytecode.rs` | Legacy stack bytecode format and instruction helpers |
+| `src/vm.rs` | Stack VM and Register VM implementations |
 | `src/repl.rs` | Interactive REPL |
 | `src/modules.rs` | Multi-file import graph |
-| `src/project.rs` | Entry-file compile pipeline |
+| `src/project.rs` | Entry-file compilation for both VM backends |
 | `examples/` | Sample `.krx` programs |
 | `benchmarks/` | Performance scripts and `.krx` benches |
 
-Pipeline: **Lexer → Parser → Compiler → Bytecode → IR optimization → Bytecode → VM**. New syntax usually touches lexer, parser, and compiler; runtime behavior lives in `vm.rs`.
+Register pipeline: **Lexer → Parser → Register/SSA lowering → Register VM**.
+
+Stack pipeline: **Lexer → Parser → Compiler → Bytecode → IR/bytecode optimization → Stack VM**.
+
+New syntax usually touches the lexer, parser, and compiler; runtime behavior
+lives in `vm.rs`, while register lowering lives in `register.rs`.
 
 ## Making changes
 
@@ -43,7 +58,10 @@ Pipeline: **Lexer → Parser → Compiler → Bytecode → IR optimization → B
 
 - Keep diffs focused; one feature or fix per PR when possible.
 - Add or update an example under `examples/` when behavior is user-visible.
-- Run `cargo test` and at least `test.krx` plus any related example before submitting.
+- Run `cargo test`, `cargo test --all-targets`, and at least `test.krx` plus
+  any related example before submitting.
+- Test language/runtime changes with both backends when appropriate:
+  `KRIA_BACKEND=register` (default) and `KRIA_BACKEND=stack`.
 - If you change performance-sensitive paths, consider running `./benchmarks/benchmarks.sh` (or `.\benchmarks\benchmarks.ps1` on Windows) and noting results in the PR.
 
 ### Documentation

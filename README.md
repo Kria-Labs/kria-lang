@@ -5,7 +5,7 @@
 <h1 align="center">Kria</h1>
 
 <p align="center">
-  A small, fast programming language — Rust bytecode VM, <code>.krx</code> sources.
+  A small, fast programming language — Rust Register VM, <code>.krx</code> sources.
 </p>
 
 <p align="center">
@@ -35,11 +35,29 @@ cargo build --release
 | `kria` | Interactive REPL |
 | `kria program.krx` | Run entry file (+ imported modules) |
 | `kria -h` | Help |
+| `kria -v` | Print Kria version |
 
 ```bash
 ./target/release/kria test.krx
 ./target/release/kria examples/13_imports/main.krx
 ```
+
+Files run with the Register VM by default. Set `KRIA_BACKEND=stack` to use
+the legacy stack-based bytecode VM:
+
+```bash
+# macOS / Linux
+KRIA_BACKEND=stack ./target/release/kria program.krx
+
+# Windows PowerShell
+$env:KRIA_BACKEND="stack"
+.\target\release\kria.exe program.krx
+```
+
+Remove the environment variable with `unset KRIA_BACKEND` on macOS/Linux or
+`Remove-Item Env:KRIA_BACKEND` in PowerShell to return to the Register VM.
+The backend setting applies to source-file execution; the interactive REPL
+currently uses the stack VM.
 
 **REPL:** persistent session, auto-print for expressions, multi-line blocks, `:help` / `:reset` / `:exit`.
 
@@ -103,13 +121,19 @@ Runnable samples live under [`examples/`](examples/):
 ## Architecture
 
 ```text
-Source (.krx) → Lexer → Parser → Compiler → Bytecode → Stack VM
+Source (.krx) → Lexer → Parser → Compiler/IR lowering → SSA/module → Register VM
+                                       └→ Bytecode/IR optimization → Stack VM
 ```
 
-- Flat bytecode, constant pool, call frames for functions
+- Register VM is the default for source-file execution from the CLI
+- The REPL currently uses the stack VM implementation
+- SSA register instructions, global/local/upvalue storage, call frames, and closures
+- Stack VM remains available through `KRIA_BACKEND=stack`
+- Legacy flat bytecode, constant pool, call frames, and optimized bytecode for the stack VM
 - Hot-loop optimizations for global and local counters, plus specialized global string appends
 - Monomorphic object-property caches, shared closure environments, and IR/bytecode cleanup passes
-- Implementation: [`src/`](src/) (`lexer`, `parser`, `compiler`, `vm`, `repl`, `modules`, `project`)
+- Implementation: [`src/`](src/) (`lexer`, `parser`, `compiler`, `optimizer`,
+  `ir`, `register`, `vm`, `repl`, `modules`, `project`)
 
 ---
 
