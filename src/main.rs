@@ -1,7 +1,8 @@
 use std::env;
 use std::process;
 
-use kria::project::compile_entry_file;
+use kria::project::{compile_entry_file, compile_register_entry_file};
+use kria::vm::RegisterVM;
 use kria::vm::VM;
 
 fn print_usage(program: &str) {
@@ -20,10 +21,15 @@ fn print_version() {
 
 fn run_file(filename: &str) -> Result<(), String> {
     let path = std::path::Path::new(filename);
-    let bytecode = compile_entry_file(path)?;
-
-    let mut vm = VM::new();
-    vm.execute(&bytecode)?;
+    if env::var("KRIA_BACKEND").unwrap_or_else(|_| "register".to_string()).to_lowercase() == "stack" {
+        let bytecode = compile_entry_file(path)?;
+        let mut vm = VM::new();
+        vm.execute(&bytecode)?;
+    } else {
+        let module = compile_register_entry_file(path)?;
+        let mut vm = RegisterVM::new();
+        vm.execute(&module)?;
+    }
     Ok(())
 }
 

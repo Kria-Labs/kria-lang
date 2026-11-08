@@ -3,8 +3,8 @@ use std::path::Path;
 use std::process;
 use std::time::Instant;
 
-use kria::project::compile_entry_file;
-use kria::vm::VM;
+use kria::project::{compile_entry_file, compile_register_entry_file};
+use kria::vm::{RegisterVM, VM};
 
 fn main() {
     let Some(filename) = env::args().nth(1) else {
@@ -13,18 +13,37 @@ fn main() {
     };
 
     let compile_started = Instant::now();
-    let bytecode = match compile_entry_file(Path::new(&filename)) {
-        Ok(bytecode) => bytecode,
-        Err(error) => {
-            eprintln!("{error}");
-            process::exit(1);
-        }
+    let (compile_ns, execution_ns, result) = if env::var("KRIA_BACKEND")
+        .unwrap_or_else(|_| "register".to_string())
+        .to_lowercase()
+        == "stack"
+    {
+        let bytecode = match compile_entry_file(Path::new(&filename)) {
+            Ok(bytecode) => bytecode,
+            Err(error) => {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+        };
+        let compile_ns = compile_started.elapsed().as_nanos();
+        let execution_started = Instant::now();
+        let result = VM::new().execute(&bytecode);
+        let execution_ns = execution_started.elapsed().as_nanos();
+        (compile_ns, execution_ns, result.map_err(|error| error))
+    } else {
+        let module = match compile_register_entry_file(Path::new(&filename)) {
+            Ok(module) => module,
+            Err(error) => {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+        };
+        let compile_ns = compile_started.elapsed().as_nanos();
+        let execution_started = Instant::now();
+        let result = RegisterVM::new().execute(&module);
+        let execution_ns = execution_started.elapsed().as_nanos();
+        (compile_ns, execution_ns, result.map_err(|error| error))
     };
-    let compile_ns = compile_started.elapsed().as_nanos();
-
-    let execution_started = Instant::now();
-    let result = VM::new().execute(&bytecode);
-    let execution_ns = execution_started.elapsed().as_nanos();
 
     eprintln!("BENCH_COMPILE_NS={compile_ns}");
     eprintln!("BENCH_EXECUTION_NS={execution_ns}");

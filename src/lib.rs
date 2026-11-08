@@ -9,4 +9,5 @@ pub mod optimizer;
 pub mod parser;
 pub mod project;
 pub mod repl;
+pub mod register;
 pub mod vm;

@@ -13,7 +13,7 @@ impl StringValue {
         Self(Arc::new(value.into()))
     }
 
-    fn concat(left: &Self, right: &Self) -> Self {
+    pub(crate) fn concat(left: &Self, right: &Self) -> Self {
         let mut value = String::with_capacity(left.0.len() + right.0.len());
         value.push_str(&left.0);
         value.push_str(&right.0);
@@ -94,7 +94,7 @@ pub struct ArrayData {
 
 impl ArrayData {
     #[inline]
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match &self.elements {
             ArrayElements::Mutable(c) => c.borrow().len(),
             ArrayElements::Immutable(v) => v.len(),
@@ -102,7 +102,7 @@ impl ArrayData {
     }
 
     #[inline]
-    fn get_cloned(&self, idx: usize) -> Option<Value> {
+    pub(crate) fn get_cloned(&self, idx: usize) -> Option<Value> {
         match &self.elements {
             ArrayElements::Mutable(c) => c.borrow().get(idx).cloned(),
             ArrayElements::Immutable(v) => v.get(idx).cloned(),
@@ -110,7 +110,7 @@ impl ArrayData {
     }
 
     #[inline]
-    fn set_at(&self, idx: usize, value: Value) -> Result<(), String> {
+    pub(crate) fn set_at(&self, idx: usize, value: Value) -> Result<(), String> {
         match &self.elements {
             ArrayElements::Mutable(c) => {
                 let mut elems = c.borrow_mut();
@@ -125,7 +125,7 @@ impl ArrayData {
     }
 
     #[inline]
-    fn push(&self, value: Value) -> Result<(), String> {
+    pub(crate) fn push(&self, value: Value) -> Result<(), String> {
         match &self.elements {
             ArrayElements::Mutable(c) => {
                 c.borrow_mut().push(value);
@@ -136,7 +136,7 @@ impl ArrayData {
     }
 
     #[inline]
-    fn pop(&self) -> Result<Value, String> {
+    pub(crate) fn pop(&self) -> Result<Value, String> {
         match &self.elements {
             ArrayElements::Mutable(c) => {
                 let mut elems = c.borrow_mut();
@@ -161,6 +161,10 @@ pub enum Value {
         bytecode_offset: usize,
         num_params: u32,
         upvalues: Rc<RefCell<Vec<Value>>>,
+    },
+    RegisterFunction {
+        function_index: usize,
+        captures: Rc<RefCell<Vec<Value>>>,
     },
     Array(Rc<ArrayData>),
     Object(Rc<ObjectData>),
@@ -356,6 +360,10 @@ impl PartialEq for Value {
                     upvalues: b_up,
                 },
             ) => a_off == b_off && a_params == b_params && *a_up.borrow() == *b_up.borrow(),
+            (
+                Value::RegisterFunction { function_index: a, captures: ac },
+                Value::RegisterFunction { function_index: b, captures: bc },
+            ) => a == b && *ac.borrow() == *bc.borrow(),
             (Value::Array(a), Value::Array(b)) => arrays_equal(a, b),
             (Value::Object(a), Value::Object(b)) => objects_equal(a, b),
             _ => false,
@@ -402,6 +410,14 @@ impl std::fmt::Display for Value {
                     bytecode_offset,
                     num_params,
                     upvalues.borrow().len()
+                )
+            }
+            Value::RegisterFunction { function_index, captures } => {
+                write!(
+                    f,
+                    "<register function {} ({} captures)>",
+                    function_index,
+                    captures.borrow().len()
                 )
             }
             Value::Array(arr) => {
@@ -615,6 +631,647 @@ pub struct CallFrame {
     return_addr: usize,
     locals_start: usize, // Index where local variables start in stack
     upvalues: Rc<RefCell<Vec<Value>>>,
+}
+
+fn add_delta(value: &mut Value, delta: i64) -> Result<(), String> {
+    match value {
+        Value::Number(number) => {
+            *number += delta;
+            Ok(())
+        }
+        Value::Float(number) => {
+            *number += delta as f64;
+            Ok(())
+        }
+        other => Err(numeric_error_message(
+            "Add",
+            other,
+            &Value::Number(delta),
+            NumericError::NotNumeric,
+        )),
+    }
+}
+
+fn step_while_less(value: &mut Value, limit: i64, step: i64) -> Result<bool, String> {
+    match value {
+        Value::Number(number) if *number < limit => {
+            *number += step;
+            Ok(true)
+        }
+        Value::Number(_) => Ok(false),
+        Value::Float(number) if float_less_than_i64(*number, limit) => {
+            *number += step as f64;
+            Ok(true)
+        }
+        Value::Float(_) => Ok(false),
+        other => Err(numeric_error_message(
+            "Less",
+            other,
+            &Value::Number(limit),
+            NumericError::NotNumeric,
+        )),
+    }
+}
+
+fn less_than_const(value: &Value, limit: i64) -> Result<bool, String> {
+    match value {
+        Value::Number(number) => Ok(*number < limit),
+        Value::Float(number) => Ok(float_less_than_i64(*number, limit)),
+        other => Err(numeric_error_message(
+            "Less",
+            other,
+            &Value::Number(limit),
+            NumericError::NotNumeric,
+        )),
+    }
+}
+
+pub struct RegisterVM {
+    globals: Vec<Value>,
+    frames: Vec<Value>,
+}
+
+impl RegisterVM {
+    pub fn new() -> Self {
+        Self {
+            globals: Vec::new(),
+            frames: Vec::new(),
+        }
+    }
+
+    pub fn global(&self, slot: usize) -> Value {
+        self.globals.get(slot).cloned().unwrap_or(Value::Null)
+    }
+
+    pub fn execute(&mut self, module: &crate::register::SsaModule) -> Result<(), String> {
+        self.globals = vec![Value::Null; module.globals.len()];
+        self.frames.clear();
+        let empty = Rc::new(RefCell::new(Vec::new()));
+        self.execute_function(&module.entry, 0, &[], &empty, &module.functions)?;
+        Ok(())
+    }
+
+    fn prepare_frame(&mut self, base: usize, function: &crate::register::SsaFunction, args: &[Value]) -> usize {
+        let end = base + function.max_registers as usize + function.local_count as usize;
+        if self.frames.len() < end {
+            self.frames.resize(end, Value::Null);
+        }
+        for slot in &mut self.frames[base..end] {
+            *slot = Value::Null;
+        }
+        let local_base = base + function.max_registers as usize;
+        for (index, value) in args.iter().take(function.params.len()).enumerate() {
+            self.frames[local_base + index] = value.clone();
+        }
+        local_base
+    }
+
+    fn global_mut(&mut self, slot: usize) -> &mut Value {
+        if slot >= self.globals.len() {
+            self.globals.resize(slot + 1, Value::Null);
+        }
+        &mut self.globals[slot]
+    }
+
+    fn execute_function(
+        &mut self,
+        function: &crate::register::SsaFunction,
+        frame_base: usize,
+        args: &[Value],
+        upvalues: &Rc<RefCell<Vec<Value>>>,
+        functions: &[crate::register::SsaFunction],
+    ) -> Result<Option<Value>, String> {
+        use crate::ast::{BinaryOperator, UnaryOperator};
+        use crate::register::{SsaInstruction, SsaTerminator};
+
+        let local_base = self.prepare_frame(frame_base, function, args);
+        let mut current = crate::register::BlockId(0);
+        loop {
+            let block_index = current.0 as usize;
+            if block_index >= function.blocks.len() {
+                return Err(format!("Register VM entered invalid block {}", block_index));
+            }
+            let block = &function.blocks[block_index];
+
+            for phi in &block.phis {
+                if let Some((value, _)) = phi.incoming.first() {
+                    let src = frame_base + value.0 as usize;
+                    let dst = frame_base + phi.dst.0 as usize;
+                    let copied = self.frames.get(src).cloned().unwrap_or(Value::Null);
+                    if dst >= self.frames.len() {
+                        self.frames.resize(dst + 1, Value::Null);
+                    }
+                    self.frames[dst] = copied;
+                }
+            }
+
+            for instruction in &block.instructions {
+                match instruction {
+                    SsaInstruction::Const { dst, idx } => {
+                        let value = function
+                            .constants
+                            .get(*idx as usize)
+                            .cloned()
+                            .ok_or_else(|| format!("Invalid register constant index {}", idx))?;
+                        self.frames[frame_base + dst.0 as usize] = value;
+                    }
+                    SsaInstruction::Null { dst } => {
+                        self.frames[frame_base + dst.0 as usize] = Value::Null;
+                    }
+                    SsaInstruction::LoadGlobal { dst, slot } => {
+                        self.frames[frame_base + dst.0 as usize] = self
+                            .globals
+                            .get(*slot as usize)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                    }
+                    SsaInstruction::StoreGlobal { slot, value } => {
+                        let slot = *slot as usize;
+                        let stored = self.frames[frame_base + value.0 as usize].clone();
+                        if slot >= self.globals.len() {
+                            self.globals.resize(slot + 1, Value::Null);
+                        }
+                        self.globals[slot] = stored;
+                    }
+                    SsaInstruction::LoadLocal { dst, slot } => {
+                        let index = local_base + *slot as usize;
+                        self.frames[frame_base + dst.0 as usize] =
+                            self.frames.get(index).cloned().unwrap_or(Value::Null);
+                    }
+                    SsaInstruction::StoreLocal { slot, value } => {
+                        let index = local_base + *slot as usize;
+                        let stored = self.frames[frame_base + value.0 as usize].clone();
+                        if index >= self.frames.len() {
+                            self.frames.resize(index + 1, Value::Null);
+                        }
+                        self.frames[index] = stored;
+                    }
+                    SsaInstruction::LoadUpvalue { dst, slot } => {
+                        let value = upvalues
+                            .borrow()
+                            .get(*slot as usize)
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        self.frames[frame_base + dst.0 as usize] = value;
+                    }
+                    SsaInstruction::StoreUpvalue { slot, value } => {
+                        let stored = self.frames[frame_base + value.0 as usize].clone();
+                        let mut cells = upvalues.borrow_mut();
+                        let slot = *slot as usize;
+                        if slot >= cells.len() {
+                            cells.resize(slot + 1, Value::Null);
+                        }
+                        cells[slot] = stored;
+                    }
+                    SsaInstruction::Move { dst, src } => {
+                        self.frames[frame_base + dst.0 as usize] =
+                            self.frames[frame_base + src.0 as usize].clone();
+                    }
+                    SsaInstruction::Unary { dst, op, value } => {
+                        let result = if matches!(op, UnaryOperator::Not) {
+                            match &self.frames[frame_base + value.0 as usize] {
+                                Value::Boolean(value) => Value::Boolean(!value),
+                                Value::Null => Value::Boolean(true),
+                                Value::Number(value) => Value::Boolean(*value == 0),
+                                _ => Value::Boolean(false),
+                            }
+                        } else {
+                            Value::Null
+                        };
+                        self.frames[frame_base + dst.0 as usize] = result;
+                    }
+                    SsaInstruction::Binary { dst, op, left, right } => {
+                        let left_index = frame_base + left.0 as usize;
+                        let right_index = frame_base + right.0 as usize;
+                        let dst_index = frame_base + dst.0 as usize;
+                        match op {
+                            BinaryOperator::And | BinaryOperator::Or => {
+                                let result = match op {
+                                    BinaryOperator::And => {
+                                        matches!(self.frames[left_index], Value::Boolean(true))
+                                            && matches!(self.frames[right_index], Value::Boolean(true))
+                                    }
+                                    _ => {
+                                        matches!(self.frames[left_index], Value::Boolean(true))
+                                            || matches!(self.frames[right_index], Value::Boolean(true))
+                                    }
+                                };
+                                self.frames[dst_index] = Value::Boolean(result);
+                            }
+                            BinaryOperator::Equals | BinaryOperator::NotEquals => {
+                                let equal = self.frames[left_index] == self.frames[right_index];
+                                self.frames[dst_index] = Value::Boolean(match op {
+                                    BinaryOperator::Equals => equal,
+                                    _ => !equal,
+                                });
+                            }
+                            BinaryOperator::Add
+                                if matches!(
+                                    (&self.frames[left_index], &self.frames[right_index]),
+                                    (Value::String(_), Value::String(_))
+                                ) =>
+                            {
+                                let joined = match (&self.frames[left_index], &self.frames[right_index]) {
+                                    (Value::String(left), Value::String(right)) => {
+                                        StringValue::concat(left, right)
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                self.frames[dst_index] = Value::String(joined);
+                            }
+                            _ => {
+                                let numeric_op = match op {
+                                    BinaryOperator::Add => NumericOp::Add,
+                                    BinaryOperator::Subtract => NumericOp::Subtract,
+                                    BinaryOperator::Multiply => NumericOp::Multiply,
+                                    BinaryOperator::Divide => NumericOp::Divide,
+                                    BinaryOperator::GreaterThan => NumericOp::Greater,
+                                    BinaryOperator::LessThan => NumericOp::Less,
+                                    BinaryOperator::GreaterOrEqual => NumericOp::GreaterEqual,
+                                    BinaryOperator::LessOrEqual => NumericOp::LessEqual,
+                                    BinaryOperator::Equals => NumericOp::Equals,
+                                    BinaryOperator::NotEquals => NumericOp::NotEquals,
+                                    BinaryOperator::And | BinaryOperator::Or => NumericOp::Add,
+                                };
+                                let result = apply_numeric_op(
+                                    numeric_op,
+                                    &self.frames[left_index],
+                                    &self.frames[right_index],
+                                )
+                                .map_err(|error| {
+                                    format!(
+                                        "Register VM numeric operation failed: {:?} for left={:?}, right={:?}",
+                                        error, self.frames[left_index], self.frames[right_index]
+                                    )
+                                })?;
+                                self.frames[dst_index] = result;
+                            }
+                        }
+                    }
+                    SsaInstruction::Print { value } => {
+                        println!("{}", self.frames[frame_base + value.0 as usize]);
+                    }
+                    SsaInstruction::Input { dst, prompt, .. } => {
+                        println!("{}", self.frames[frame_base + prompt.0 as usize]);
+                        let mut line = String::new();
+                        std::io::stdin()
+                            .read_line(&mut line)
+                            .map_err(|error| error.to_string())?;
+                        self.frames[frame_base + dst.0 as usize] = if line.is_empty() {
+                            Value::Null
+                        } else {
+                            let line = line.trim().to_string();
+                            match line.parse::<i64>() {
+                                Ok(value) => Value::Number(value),
+                                Err(_) => match line.parse::<f64>() {
+                                    Ok(value) => Value::Float(value),
+                                    Err(_) => Value::String(StringValue::from(line)),
+                                },
+                            }
+                        };
+                    }
+                    SsaInstruction::Call {
+                        dst,
+                        callee,
+                        args: arg_values,
+                    } => {
+                        let callee_value = self.frames[frame_base + callee.0 as usize].clone();
+                        let call_args: Vec<Value> = arg_values
+                            .iter()
+                            .map(|value| self.frames[frame_base + value.0 as usize].clone())
+                            .collect();
+                        let result = match callee_value {
+                            Value::RegisterFunction {
+                                function_index,
+                                captures,
+                            } => {
+                                let callee_function = functions.get(function_index).ok_or_else(|| {
+                                    format!("Invalid register function index {}", function_index)
+                                })?;
+                                let caller_end = frame_base
+                                    + function.max_registers as usize
+                                    + function.local_count as usize;
+                                let result = self.execute_function(
+                                    callee_function,
+                                    caller_end,
+                                    &call_args,
+                                    &captures,
+                                    functions,
+                                )?;
+                                self.frames.truncate(caller_end);
+                                result
+                            }
+                            _ => None,
+                        };
+                        self.frames[frame_base + dst.0 as usize] = result.unwrap_or(Value::Null);
+                    }
+                    SsaInstruction::MakeClosure {
+                        dst,
+                        function: function_index,
+                        captures,
+                    } => {
+                        let mut resolved = Vec::with_capacity(captures.len());
+                        for cap in captures {
+                            let value = match cap {
+                                crate::register::CaptureKind::Local(slot) => self
+                                    .frames
+                                    .get(local_base + *slot as usize)
+                                    .cloned()
+                                    .unwrap_or(Value::Null),
+                                crate::register::CaptureKind::Upvalue(slot) => upvalues
+                                    .borrow()
+                                    .get(*slot as usize)
+                                    .cloned()
+                                    .unwrap_or(Value::Null),
+                            };
+                            resolved.push(value);
+                        }
+                        self.frames[frame_base + dst.0 as usize] = Value::RegisterFunction {
+                            function_index: *function_index as usize,
+                            captures: Rc::new(RefCell::new(resolved)),
+                        };
+                    }
+                    SsaInstruction::Return { value } => {
+                        return Ok(value.map(|value| self.frames[frame_base + value.0 as usize].clone()));
+                    }
+                    SsaInstruction::BuildArray { dst, elements, mutable } => {
+                        let values = elements
+                            .iter()
+                            .map(|element| self.frames[frame_base + element.0 as usize].clone())
+                            .collect();
+                        let data = ArrayData {
+                            mutable: *mutable,
+                            elements: if *mutable {
+                                ArrayElements::Mutable(RefCell::new(values))
+                            } else {
+                                ArrayElements::Immutable(values)
+                            },
+                        };
+                        self.frames[frame_base + dst.0 as usize] = Value::Array(Rc::new(data));
+                    }
+                    SsaInstruction::BuildObject { dst, fields } => {
+                        let object = new_object();
+                        if let Value::Object(object_value) = &object {
+                            let mut map = object_value.fields.borrow_mut();
+                            for (name, value) in fields {
+                                map.insert(
+                                    Arc::from(name.as_str()),
+                                    self.frames[frame_base + value.0 as usize].clone(),
+                                );
+                            }
+                        }
+                        self.frames[frame_base + dst.0 as usize] = object;
+                    }
+                    SsaInstruction::IndexGet { dst, object, index } => {
+                        let value = match (
+                            &self.frames[frame_base + object.0 as usize],
+                            &self.frames[frame_base + index.0 as usize],
+                        ) {
+                            (Value::Array(array), Value::Number(index)) => {
+                                if *index >= 0 {
+                                    array.get_cloned(*index as usize).unwrap_or(Value::Null)
+                                } else {
+                                    Value::Null
+                                }
+                            }
+                            (Value::Object(object), Value::String(index)) => object
+                                .fields
+                                .borrow()
+                                .get(index.to_arc_str().as_ref())
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        };
+                        self.frames[frame_base + dst.0 as usize] = value;
+                    }
+                    SsaInstruction::IndexSet { object, index, value } => {
+                        let stored = self.frames[frame_base + value.0 as usize].clone();
+                        match (
+                            &self.frames[frame_base + object.0 as usize],
+                            &self.frames[frame_base + index.0 as usize],
+                        ) {
+                            (Value::Array(array), Value::Number(index)) => {
+                                if *index >= 0 {
+                                    let _ = array.set_at(*index as usize, stored);
+                                }
+                            }
+                            (Value::Object(object), Value::String(index)) => {
+                                let mut fields = object.fields.borrow_mut();
+                                fields.insert(index.to_arc_str(), stored);
+                                object
+                                    .shape_version
+                                    .set(object.shape_version.get().wrapping_add(1));
+                            }
+                            _ => {}
+                        }
+                    }
+                    SsaInstruction::PropertyGet { dst, object, member } => {
+                        let value = match &self.frames[frame_base + object.0 as usize] {
+                            Value::Object(object) => object
+                                .fields
+                                .borrow()
+                                .get(member.as_str())
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        };
+                        self.frames[frame_base + dst.0 as usize] = value;
+                    }
+                    SsaInstruction::PropertySet { object, member, value } => {
+                        let stored = self.frames[frame_base + value.0 as usize].clone();
+                        if let Value::Object(object) = &self.frames[frame_base + object.0 as usize] {
+                            let mut fields = object.fields.borrow_mut();
+                            fields.insert(Arc::from(member.as_str()), stored);
+                            object
+                                .shape_version
+                                .set(object.shape_version.get().wrapping_add(1));
+                        }
+                    }
+                    SsaInstruction::ArrayLen { dst, object } => {
+                        let len = match &self.frames[frame_base + object.0 as usize] {
+                            Value::Array(array) => array.len() as i64,
+                            _ => 0,
+                        };
+                        self.frames[frame_base + dst.0 as usize] = Value::Number(len);
+                    }
+                    SsaInstruction::ArrayPush { object, value } => {
+                        let stored = self.frames[frame_base + value.0 as usize].clone();
+                        if let Value::Array(array) = &self.frames[frame_base + object.0 as usize] {
+                            let _ = array.push(stored);
+                        }
+                    }
+                    SsaInstruction::ArrayPop { dst, object } => {
+                        let result = match &self.frames[frame_base + object.0 as usize] {
+                            Value::Array(array) => array.pop().unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        };
+                        self.frames[frame_base + dst.0 as usize] = result;
+                    }
+                    SsaInstruction::ObjectKeys { dst, object } => {
+                        let keys = match &self.frames[frame_base + object.0 as usize] {
+                            Value::Object(object) => object
+                                .fields
+                                .borrow()
+                                .keys()
+                                .map(|key| Value::String(StringValue::from(key.as_ref())))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        self.frames[frame_base + dst.0 as usize] = Value::Array(Rc::new(ArrayData {
+                            mutable: true,
+                            elements: ArrayElements::Mutable(RefCell::new(keys)),
+                        }));
+                    }
+                    SsaInstruction::ObjectDelete { object, member } => {
+                        if let Value::Object(object) = &self.frames[frame_base + object.0 as usize] {
+                            object.fields.borrow_mut().shift_remove(member.as_str());
+                            object
+                                .shape_version
+                                .set(object.shape_version.get().wrapping_add(1));
+                        }
+                    }
+                    SsaInstruction::ObjectDeleteKey { object, key } => {
+                        let key_text = match &self.frames[frame_base + key.0 as usize] {
+                            Value::String(text) => Some(text.to_arc_str()),
+                            _ => None,
+                        };
+                        if let (Some(key_text), Value::Object(object)) = (
+                            key_text,
+                            &self.frames[frame_base + object.0 as usize],
+                        ) {
+                            object.fields.borrow_mut().shift_remove(key_text.as_ref());
+                            object
+                                .shape_version
+                                .set(object.shape_version.get().wrapping_add(1));
+                        }
+                    }
+                    SsaInstruction::IsArray { dst, value } => {
+                        self.frames[frame_base + dst.0 as usize] = Value::Boolean(matches!(
+                            self.frames[frame_base + value.0 as usize],
+                            Value::Array(_)
+                        ));
+                    }
+                    SsaInstruction::IsObject { dst, value } => {
+                        self.frames[frame_base + dst.0 as usize] = Value::Boolean(matches!(
+                            self.frames[frame_base + value.0 as usize],
+                            Value::Object(_)
+                        ));
+                    }
+                    SsaInstruction::MemberLength { dst, object } => {
+                        let len = match &self.frames[frame_base + object.0 as usize] {
+                            Value::Array(array) => array.len() as i64,
+                            Value::String(value) => value.len() as i64,
+                            Value::Object(object) => object.fields.borrow().len() as i64,
+                            _ => 0,
+                        };
+                        self.frames[frame_base + dst.0 as usize] = Value::Number(len);
+                    }
+                    SsaInstruction::Type { dst, value } => {
+                        let type_name = match &self.frames[frame_base + value.0 as usize] {
+                            Value::Number(_) | Value::Float(_) => "number",
+                            Value::String(_) => "string",
+                            Value::Boolean(_) => "boolean",
+                            Value::Null => "null",
+                            Value::Function { .. } | Value::RegisterFunction { .. } => "function",
+                            Value::Array(_) => "array",
+                            Value::Object(_) => "object",
+                        };
+                        self.frames[frame_base + dst.0 as usize] =
+                            Value::String(StringValue::from(type_name));
+                    }
+                    SsaInstruction::Wait { dst, value } => {
+                        if let Value::Number(milliseconds) = self.frames[frame_base + value.0 as usize] {
+                            std::thread::sleep(std::time::Duration::from_millis(milliseconds.max(0) as u64));
+                        }
+                        self.frames[frame_base + dst.0 as usize] = Value::Null;
+                    }
+                    SsaInstruction::AddGlobal { slot, delta } => {
+                        add_delta(self.global_mut(*slot as usize), *delta)?;
+                    }
+                    SsaInstruction::AddLocal { slot, delta } => {
+                        let index = local_base + *slot as usize;
+                        if index >= self.frames.len() {
+                            self.frames.resize(index + 1, Value::Null);
+                        }
+                        add_delta(&mut self.frames[index], *delta)?;
+                    }
+                    SsaInstruction::AppendStringGlobal { slot, suffix } => {
+                        match self.global_mut(*slot as usize) {
+                            Value::String(value) => value.append(suffix),
+                            other => {
+                                return Err(format!(
+                                    "Add requires two numbers or two strings, found {:?} and {:?}",
+                                    other, suffix
+                                ));
+                            }
+                        }
+                    }
+                    SsaInstruction::LoopIncLess {
+                        slot,
+                        limit,
+                        step,
+                        local,
+                    } => loop {
+                        let keep_going = if *local {
+                            let index = local_base + *slot as usize;
+                            if index >= self.frames.len() {
+                                self.frames.resize(index + 1, Value::Null);
+                            }
+                            step_while_less(&mut self.frames[index], *limit, *step)?
+                        } else {
+                            step_while_less(self.global_mut(*slot as usize), *limit, *step)?
+                        };
+                        if !keep_going {
+                            break;
+                        }
+                    },
+                }
+            }
+
+            match &block.terminator {
+                SsaTerminator::Fallthrough => return Ok(None),
+                SsaTerminator::Jump(target) => current = *target,
+                SsaTerminator::Branch {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
+                    let condition = &self.frames[frame_base + condition.0 as usize];
+                    let take_then = match condition {
+                        Value::Boolean(value) => *value,
+                        Value::Null => false,
+                        Value::Number(value) => *value != 0,
+                        _ => true,
+                    };
+                    current = if take_then { *then_block } else { *else_block };
+                }
+                SsaTerminator::CompareLessConst {
+                    slot,
+                    limit,
+                    local,
+                    then_block,
+                    else_block,
+                } => {
+                    let value = if *local {
+                        self.frames
+                            .get(local_base + *slot as usize)
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    } else {
+                        self.globals.get(*slot as usize).cloned().unwrap_or(Value::Null)
+                    };
+                    current = if less_than_const(&value, *limit)? {
+                        *then_block
+                    } else {
+                        *else_block
+                    };
+                }
+                SsaTerminator::Return(value) => {
+                    return Ok(value.map(|value| self.frames[frame_base + value.0 as usize].clone()));
+                }
+            }
+        }
+    }
 }
 
 pub struct VM {
@@ -1608,7 +2265,7 @@ impl VM {
                         Value::String(_) => "string",
                         Value::Boolean(_) => "boolean",
                         Value::Null => "null",
-                        Value::Function { .. } => "function",
+                        Value::Function { .. } | Value::RegisterFunction { .. } => "function",
                         Value::Array(_) => "array",
                         Value::Object(_) => "object",
                     };
