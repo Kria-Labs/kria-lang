@@ -58,12 +58,14 @@ impl<'a> LlvmCompiler<'a> {
         self.collect_strings_from_func(&self.module.entry);
 
         // Compile functions
+        let mut constant_base = self.module.constants.len();
         for (i, func) in self.module.functions.iter().enumerate() {
-            body.push_str(&self.compile_function(func, i));
+            body.push_str(&self.compile_function(func, i, constant_base));
+            constant_base += func.constants.len();
         }
 
         // Compile entry
-        body.push_str(&self.compile_entry(&self.module.entry));
+        body.push_str(&self.compile_entry(&self.module.entry, 0));
 
         // Header
         self.emit_header();
@@ -183,7 +185,12 @@ ret_true:
         self.out.push('\n');
     }
 
-    fn compile_function(&mut self, func: &SsaFunction, func_idx: usize) -> String {
+    fn compile_function(
+        &mut self,
+        func: &SsaFunction,
+        func_idx: usize,
+        constant_base: usize,
+    ) -> String {
         let mut s = String::new();
         let param_count = func.params.len();
 
@@ -203,7 +210,7 @@ ret_true:
             func_idx, param_str
         ));
 
-        s.push_str(&self.emit_function_allocas_and_body(func, param_count, false));
+        s.push_str(&self.emit_function_allocas_and_body(func, param_count, false, constant_base));
         s.push_str("}\n\n");
 
         // 2. Uniform wrapper
@@ -240,10 +247,10 @@ ret_true:
         s
     }
 
-    fn compile_entry(&mut self, entry_func: &SsaFunction) -> String {
+    fn compile_entry(&mut self, entry_func: &SsaFunction, constant_base: usize) -> String {
         let mut s = String::new();
         s.push_str("define void @kria_entry(%Context* %ctx, %Runtime* %rt) {\nentry:\n");
-        s.push_str(&self.emit_function_allocas_and_body(entry_func, 0, true));
+        s.push_str(&self.emit_function_allocas_and_body(entry_func, 0, true, constant_base));
         s.push_str("}\n\n");
         s
     }
@@ -253,6 +260,7 @@ ret_true:
         func: &SsaFunction,
         param_count: usize,
         is_entry: bool,
+        constant_base: usize,
     ) -> String {
         let mut s = String::new();
 
@@ -347,7 +355,7 @@ ret_true:
         // Emit blocks
         for (bi, block) in func.blocks.iter().enumerate() {
             s.push_str(&format!("block_{}:\n", block.id.0));
-            s.push_str(&self.emit_block_instructions(func, block, is_entry, &bufs));
+            s.push_str(&self.emit_block_instructions(func, block, is_entry, constant_base, &bufs));
 
             // Check if block ends with a terminator
             let next_block = func.blocks.get(bi + 1).map(|b| b.id.0);
@@ -363,6 +371,7 @@ ret_true:
         func: &SsaFunction,
         block: &SsaBlock,
         is_entry: bool,
+        constant_base: usize,
         bufs: &FuncBuffers,
     ) -> String {
         let mut s = String::new();
@@ -410,7 +419,7 @@ ret_true:
                             ));
                             s.push_str(&format!(
                                 "  %c_slot_{tmp} = getelementptr %Value, %Value* %c_ptr_{tmp}, i32 {}\n",
-                                idx
+                                constant_base + *idx as usize
                             ));
                             s.push_str(&format!(
                                 "  %c_val_{tmp} = load %Value, %Value* %c_slot_{tmp}\n"

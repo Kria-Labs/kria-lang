@@ -26,6 +26,49 @@ fn test_jit_loads_and_runs_platform_library() {
 }
 
 #[test]
+fn test_jit_function_constants_use_the_shared_constant_pool_offset() {
+    let ssa = compile_to_ssa(
+        r#"
+print("entry string")
+fn greet() {
+    print("function string")
+}
+greet()
+"#,
+    );
+    let ir = LlvmJit::new().compile_to_llvm_ir(&ssa);
+    let function_ir = ir
+        .split("define %Value @kria_func_direct_0")
+        .nth(1)
+        .unwrap()
+        .split("define %Value @kria_func_0")
+        .next()
+        .unwrap();
+    assert!(function_ir.lines().any(|line| {
+        line.contains("getelementptr %Value, %Value* %c_ptr_") && line.ends_with("i32 1")
+    }));
+    assert_eq!(ssa.constants.len(), 1);
+    assert_eq!(ssa.functions[0].constants.len(), 1);
+}
+
+#[test]
+fn test_jit_repeated_for_in_bindings_allocate_every_local_slot() {
+    let ssa = compile_to_ssa(
+        r#"
+set values = [1, 2]
+for item in values {
+    print(item)
+}
+for item in values {
+    print(item)
+}
+"#,
+    );
+    let mut jit = LlvmJit::new();
+    jit.compile(&ssa).unwrap();
+}
+
+#[test]
 fn test_jit_while_loop_accumulator() {
     let ssa = compile_to_ssa(
         r#"

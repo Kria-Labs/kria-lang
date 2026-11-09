@@ -156,7 +156,13 @@ impl LlvmJit {
             entry_fn,
             function_ptrs,
             globals_count: module.globals.len(),
-            constants: module.constants.clone(),
+            constants: {
+                let mut constants = module.constants.clone();
+                for function in &module.functions {
+                    constants.extend(function.constants.iter().cloned());
+                }
+                constants
+            },
         })
     }
 

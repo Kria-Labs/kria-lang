@@ -266,6 +266,7 @@ enum Variable {
 #[derive(Debug, Clone)]
 struct ScopeFrame {
     locals: HashMap<String, u32>,
+    next_local: u32,
     upvalue_names: Vec<String>,
     captures: Vec<CaptureKind>,
     is_module: bool,
@@ -296,6 +297,14 @@ impl ModuleContext {
 pub struct ModuleLowerer {
     pub context: std::rc::Rc<std::cell::RefCell<ModuleContext>>,
     scope_stack: std::rc::Rc<std::cell::RefCell<Vec<ScopeFrame>>>,
+}
+
+impl ScopeFrame {
+    fn allocate_local(&mut self) -> u32 {
+        let slot = self.next_local;
+        self.next_local += 1;
+        slot
+    }
 }
 
 fn optimize_ssa_function(function: &mut SsaFunction) {
@@ -392,6 +401,7 @@ impl ModuleLowerer {
     pub fn lower_module(&mut self, statements: &[Statement]) -> Result<SsaModule, String> {
         self.scope_stack.borrow_mut().push(ScopeFrame {
             locals: HashMap::new(),
+            next_local: 0,
             upvalue_names: Vec::new(),
             captures: Vec::new(),
             is_module: true,
@@ -587,7 +597,7 @@ impl FunctionLowerer {
                     if !exists {
                         let mut stack = self.module.scope_stack.borrow_mut();
                         let current = stack.len() - 1;
-                        let slot = stack[current].locals.len() as u32;
+                        let slot = stack[current].allocate_local();
                         stack[current].locals.insert(name.clone(), slot);
                         Variable::Local(slot)
                     } else {
@@ -1211,7 +1221,7 @@ impl FunctionLowerer {
                 return;
             };
             for slot in &slots {
-                let local = frame.locals.len() as u32;
+                let local = frame.allocate_local();
                 frame.locals.insert(format!("__promo_{local}"), local);
                 mapping.insert(*slot, local);
             }
@@ -1356,14 +1366,14 @@ impl FunctionLowerer {
         let (index_slot, key_slot, value_slot) = {
             let mut stack = self.module.scope_stack.borrow_mut();
             let current = stack.len() - 1;
-            let index_slot = stack[current].locals.len() as u32;
+            let index_slot = stack[current].allocate_local();
             stack[current]
                 .locals
                 .insert(format!("__for_index_{}", key_name), index_slot);
-            let key_slot = index_slot + 1;
+            let key_slot = stack[current].allocate_local();
             stack[current].locals.insert(key_name.to_string(), key_slot);
             let value_slot = if let Some(v_name) = value_name {
-                let slot = key_slot + 1;
+                let slot = stack[current].allocate_local();
                 stack[current].locals.insert(v_name.to_string(), slot);
                 slot
             } else {
@@ -1513,6 +1523,7 @@ impl FunctionLowerer {
             }
             stack.push(ScopeFrame {
                 locals: frame_locals,
+                next_local: params.len() as u32,
                 upvalue_names: Vec::new(),
                 captures: Vec::new(),
                 is_module: false,
@@ -1866,6 +1877,7 @@ impl FunctionLowerer {
                     }
                     stack.push(ScopeFrame {
                         locals: frame_locals,
+                        next_local: params.len() as u32,
                         upvalue_names: Vec::new(),
                         captures: Vec::new(),
                         is_module: false,
@@ -1941,7 +1953,7 @@ impl FunctionLowerer {
             .scope_stack
             .borrow()
             .last()
-            .map(|frame| frame.locals.len() as u32)
+            .map(|frame| frame.next_local)
             .unwrap_or(0);
         let mut function = self.finish();
         function.local_count = local_count;
