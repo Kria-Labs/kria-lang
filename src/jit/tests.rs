@@ -19,6 +19,13 @@ fn test_jit_arithmetic_and_print() {
 }
 
 #[test]
+fn test_jit_loads_and_runs_platform_library() {
+    let ssa = compile_to_ssa("set value = 42\n");
+    let mut jit = LlvmJit::new();
+    jit.execute(&ssa).unwrap();
+}
+
+#[test]
 fn test_jit_while_loop_accumulator() {
     let ssa = compile_to_ssa(
         r#"

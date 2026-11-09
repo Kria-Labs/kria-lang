@@ -70,6 +70,11 @@ impl<'a> LlvmCompiler<'a> {
         self.emit_string_constants();
 
         self.out.push_str(&body);
+        #[cfg(target_os = "windows")]
+        {
+            lower_windows_runtime_abi(&self.out)
+        }
+        #[cfg(not(target_os = "windows"))]
         self.out
     }
 
@@ -103,10 +108,7 @@ impl<'a> LlvmCompiler<'a> {
 
     fn emit_header(&mut self) {
         self.out.push_str(
-            r#"target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
-target triple = "x86_64-pc-linux-gnu"
-
-%Value = type { i64, i64 }
+            r#"%Value = type { i64, i64 }
 %Context = type { %Value*, i64, %Value* }
 %Runtime = type {
     void (%Context*, %Value)*,
@@ -1728,6 +1730,316 @@ ret_true:
             }
         }
         s
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn lower_windows_runtime_abi(ir: &str) -> String {
+    let mut output = String::with_capacity(ir.len() + 4096);
+    let mut function_lines = Vec::new();
+    let mut runtime_fields = HashMap::new();
+    let mut callbacks = HashMap::new();
+    let mut temporary_index = 0usize;
+    let mut exported_sret: Option<String> = None;
+
+    for line in ir.lines() {
+        if line.starts_with("define ") {
+            flush_windows_function(&mut output, &mut function_lines);
+            exported_sret = None;
+        }
+
+        if function_lines.is_empty() && !line.starts_with("define ") {
+            output.push_str(line);
+            output.push('\n');
+            continue;
+        }
+
+        if line.starts_with("define ") {
+            if let Some((definition, return_pointer)) = lower_windows_exported_function(line) {
+                function_lines.push(definition);
+                exported_sret = Some(return_pointer);
+                continue;
+            }
+        }
+
+        if line.trim() == "}" {
+            function_lines.push(line.to_string());
+            flush_windows_function(&mut output, &mut function_lines);
+            runtime_fields.clear();
+            callbacks.clear();
+            exported_sret = None;
+            continue;
+        }
+
+        if let Some(return_pointer) = &exported_sret {
+            let trimmed = line.trim();
+            if let Some(value) = trimmed.strip_prefix("ret %Value ") {
+                function_lines.push(format!(
+                    "  store %Value {value}, %Value* {return_pointer}, align 8"
+                ));
+                function_lines.push("  ret void".to_string());
+                continue;
+            }
+        }
+
+        if let Some((pointer_name, field)) = runtime_field_pointer(line) {
+            runtime_fields.insert(pointer_name, field);
+            function_lines.push(line.to_string());
+            continue;
+        }
+
+        if let Some((function_name, signature, pointer_name)) = loaded_runtime_callback(line) {
+            if runtime_fields.contains_key(pointer_name.as_str()) {
+                if let Some(abi_signature) = windows_callback_signature(&signature) {
+                    let abi_name = format!("{}_kria_abi", function_name.trim_start_matches('%'));
+                    let abi_function = format!("%{abi_name}");
+                    function_lines.push(line.to_string());
+                    function_lines.push(format!(
+                        "  {abi_function} = bitcast {}* {function_name} to {}*",
+                        signature, abi_signature.llvm_type
+                    ));
+                    callbacks.insert(function_name, (abi_function, abi_signature));
+                    continue;
+                }
+            }
+        }
+
+        if let Some((result_name, return_type, function_name, arguments)) =
+            runtime_callback_call(line)
+        {
+            if let Some((abi_function, signature)) = callbacks.get(function_name.as_str()) {
+                let mut call_arguments = Vec::new();
+                let mut setup = Vec::new();
+                let mut argument_index = 0;
+
+                let output_name = if signature.returns_value {
+                    let name = format!("%kria_abi_{temporary_index}_out");
+                    temporary_index += 1;
+                    function_lines.push(format!("  {name} = alloca %Value, align 8"));
+                    call_arguments.push(format!(
+                        "%Value* sret([16 x i8]) align 8 {name}"
+                    ));
+                    Some(name)
+                } else {
+                    None
+                };
+
+                for (argument_type, argument_value) in arguments {
+                    if argument_type == "%Value" {
+                        let name = format!("%kria_abi_{temporary_index}_arg_{argument_index}");
+                        temporary_index += 1;
+                        setup.push(format!("  {name} = alloca %Value, align 8"));
+                        setup.push(format!(
+                            "  store %Value {argument_value}, %Value* {name}, align 8"
+                        ));
+                        call_arguments.push(format!("%Value* align 8 {name}"));
+                        argument_index += 1;
+                    } else {
+                        call_arguments.push(format!("{argument_type} {argument_value}"));
+                    }
+                }
+
+                function_lines.extend(setup);
+                let call_return_type = if signature.returns_value {
+                    "void"
+                } else {
+                    &return_type
+                };
+                let call_result = if signature.returns_value {
+                    String::new()
+                } else {
+                    result_name
+                        .as_deref()
+                        .map(|name| format!("{name} = "))
+                        .unwrap_or_default()
+                };
+                function_lines.push(format!(
+                    "  {call_result}call {call_return_type} {abi_function}({})",
+                    call_arguments.join(", ")
+                ));
+                if let (Some(result_name), Some(output_name)) = (result_name, output_name) {
+                    function_lines.push(format!(
+                        "  {result_name} = load %Value, %Value* {output_name}, align 8"
+                    ));
+                }
+                continue;
+            }
+        }
+
+        function_lines.push(line.to_string());
+    }
+
+    flush_windows_function(&mut output, &mut function_lines);
+    output
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsCallbackSignature {
+    llvm_type: String,
+    returns_value: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_callback_signature(signature: &str) -> Option<WindowsCallbackSignature> {
+    let open = signature.find('(')?;
+    let close = signature.rfind(')')?;
+    let return_type = signature[..open].trim();
+    let parameters = split_llvm_arguments(&signature[open + 1..close]);
+    let returns_value = return_type == "%Value";
+    let mut lowered_parameters = Vec::with_capacity(parameters.len() + usize::from(returns_value));
+
+    if returns_value {
+        lowered_parameters.push("%Value*".to_string());
+    }
+    for parameter in parameters {
+        let parameter = parameter.trim();
+        lowered_parameters.push(if parameter == "%Value" {
+            "%Value*".to_string()
+        } else {
+            parameter.to_string()
+        });
+    }
+
+    let lowered_return_type = if returns_value { "void" } else { return_type };
+    Some(WindowsCallbackSignature {
+        llvm_type: format!(
+            "{} ({})",
+            lowered_return_type,
+            lowered_parameters.join(", ")
+        ),
+        returns_value,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn lower_windows_exported_function(line: &str) -> Option<(String, String)> {
+    let declaration = line.strip_prefix("define %Value @kria_func_")?;
+    let name_end = declaration.find('(')?;
+    let function_suffix = &declaration[..name_end];
+    if function_suffix.starts_with("direct_") {
+        return None;
+    }
+
+    let return_pointer = "%kria_result".to_string();
+    let parameters = &declaration[name_end + 1..declaration.rfind(')')?];
+    Some((
+        format!(
+            "define void @kria_func_{function_suffix}(%Value* sret([16 x i8]) align 8 {return_pointer}, {parameters}) {{"
+        ),
+        return_pointer,
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn runtime_field_pointer(line: &str) -> Option<(String, usize)> {
+    if !line.contains("getelementptr %Runtime") {
+        return None;
+    }
+    let (name, _) = line.trim().split_once(" = ")?;
+    let field = line.rsplit_once(", i32 ")?.1.trim().parse().ok()?;
+    Some((name.to_string(), field))
+}
+
+#[cfg(target_os = "windows")]
+fn loaded_runtime_callback(line: &str) -> Option<(String, String, String)> {
+    if !line.contains(" = load ") {
+        return None;
+    }
+    let (name, expression) = line.trim().split_once(" = load ")?;
+    let parts = split_llvm_arguments(expression);
+    let function_type = parts.first()?.trim().strip_suffix('*')?.trim();
+    let pointer_name = expression.rsplit_once(' ')? .1.trim();
+    if !function_type.contains('(') || !pointer_name.starts_with('%') {
+        return None;
+    }
+    Some((name.to_string(), function_type.to_string(), pointer_name.to_string()))
+}
+
+#[cfg(target_os = "windows")]
+fn runtime_callback_call(
+    line: &str,
+) -> Option<(Option<String>, String, String, Vec<(String, String)>)> {
+    let trimmed = line.trim();
+    let call_index = trimmed.find("call ")?;
+    let prefix = trimmed[..call_index].trim();
+    let result_name = prefix
+        .strip_suffix('=')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    let call = &trimmed[call_index + "call ".len()..];
+    let open = call.find('(')?;
+    let close = call.rfind(')')?;
+    let mut header = call[..open].split_whitespace();
+    let return_type = header.next()?.to_string();
+    let function_name = header.next()?.to_string();
+    if !function_name.starts_with('%') {
+        return None;
+    }
+    let arguments = split_llvm_arguments(&call[open + 1..close])
+        .into_iter()
+        .map(|argument| {
+            let argument = argument.trim();
+            let split = argument.find(' ')?;
+            Some((
+                argument[..split].to_string(),
+                argument[split + 1..].trim().to_string(),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((result_name, return_type, function_name, arguments))
+}
+
+#[cfg(target_os = "windows")]
+fn split_llvm_arguments(arguments: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in arguments.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&arguments[start..index]);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if start < arguments.len() {
+        parts.push(&arguments[start..]);
+    }
+    parts
+}
+
+#[cfg(target_os = "windows")]
+fn flush_windows_function(output: &mut String, function_lines: &mut Vec<String>) {
+    if function_lines.is_empty() {
+        return;
+    }
+    let alloca_index = function_lines
+        .iter()
+        .position(|line| line.trim() == "entry:")
+        .map(|index| index + 1);
+    if let Some(index) = alloca_index {
+        let mut allocation_lines = Vec::new();
+        for line in function_lines.iter() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("%kria_abi_") && trimmed.contains(" = alloca %Value") {
+                allocation_lines.push(line.clone());
+            }
+        }
+        function_lines.retain(|line| {
+            let trimmed = line.trim();
+            !(trimmed.starts_with("%kria_abi_") && trimmed.contains(" = alloca %Value"))
+        });
+        for (offset, line) in allocation_lines.into_iter().enumerate() {
+            function_lines.insert(index + offset, line);
+        }
+    }
+    for line in function_lines.drain(..) {
+        output.push_str(&line);
+        output.push('\n');
     }
 }
 

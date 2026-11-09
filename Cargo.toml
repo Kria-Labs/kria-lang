@@ -8,7 +8,7 @@ authors = ["Piotriox"]
 [dependencies]
 indexmap = "2"
 rustyline = "14"
-libc = "0.2"
+libloading = "0.8"
 
 [profile.release]
 opt-level = 3

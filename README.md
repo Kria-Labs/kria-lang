@@ -58,6 +58,10 @@ $env:KRIA_BACKEND="jit"
 .\target\release\kria.exe program.krx
 ```
 
+The JIT requires `clang` on `PATH`. It compiles generated LLVM IR to a
+platform-native shared library (`.dll`, `.dylib`, or `.so`) and loads it through
+a cross-platform dynamic-library API.
+
 Remove the environment variable with `unset KRIA_BACKEND` on macOS/Linux or
 `Remove-Item Env:KRIA_BACKEND` in PowerShell to return to the Register VM.
 The backend setting applies to source-file execution; the interactive REPL
@@ -168,7 +172,7 @@ By default the runner uses 2 warmups and 7 measured runs. For a quick check:
 node benchmarks/run.mjs --sizes small --warmup 0 --runs 1
 ```
 
-Options include `--sizes small,large`, `--languages register,stack,node,python`,
+Options include `--sizes small,large`, `--languages register,stack,jit,node,python`,
 `--warmup N`, `--runs N`, and `--seed N`. Set `BENCH_PYTHON` to select a Python
 interpreter, `BENCH_KRIA` to choose the Kria startup-baseline executable, or
 `BENCH_KRIA_BENCH` to choose the timed Kria harness. Results include median,

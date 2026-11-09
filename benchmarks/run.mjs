@@ -42,7 +42,7 @@ function parseArguments(args) {
   --warmup N                 Warmup runs per workload/runtime (default ${defaults.warmup})
   --runs N                   Measured runs (default ${defaults.runs})
   --sizes small,large        Workload sizes (default small,large)
-  --languages register,stack,node,python  Runtimes to compare
+  --languages register,stack,jit,node,python  Runtimes to compare
   --seed N                   Deterministic run-order shuffle seed
   --output DIR               Result directory (default benchmarks/results/<timestamp>)
   --no-build                 Do not run cargo build --release`);

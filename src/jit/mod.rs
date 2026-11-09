@@ -10,7 +10,7 @@ pub use runtime::{KriaContext, KriaRuntime, RUNTIME_TABLE};
 pub use value::LlvmValue;
 
 use crate::register::SsaModule;
-use std::ffi::{CStr, CString};
+use libloading::Library;
 use std::fs;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,17 +22,29 @@ pub struct LlvmJit {
 }
 
 pub struct CompiledJit {
-    handle: *mut libc::c_void,
-    ll_path: std::path::PathBuf,
-    so_path: std::path::PathBuf,
+    library: Option<Library>,
+    _artifacts: JitArtifacts,
     entry_fn: extern "C" fn(*mut KriaContext, *const KriaRuntime),
     function_ptrs: Vec<runtime::JitFn>,
     globals_count: usize,
     constants: Vec<crate::vm::Value>,
 }
 
-unsafe impl Send for CompiledJit {}
-unsafe impl Sync for CompiledJit {}
+struct JitArtifacts {
+    ir_path: std::path::PathBuf,
+    library_path: std::path::PathBuf,
+    import_library_path: Option<std::path::PathBuf>,
+}
+
+impl Drop for JitArtifacts {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.ir_path);
+        let _ = fs::remove_file(&self.library_path);
+        if let Some(path) = &self.import_library_path {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
 
 impl CompiledJit {
     pub fn run(&self) -> Result<(), String> {
@@ -49,13 +61,7 @@ impl CompiledJit {
 
 impl Drop for CompiledJit {
     fn drop(&mut self) {
-        unsafe {
-            if !self.handle.is_null() {
-                libc::dlclose(self.handle);
-            }
-        }
-        let _ = fs::remove_file(&self.ll_path);
-        let _ = fs::remove_file(&self.so_path);
+        drop(self.library.take());
     }
 }
 
@@ -84,81 +90,69 @@ impl LlvmJit {
         let pid = std::process::id();
         let count = JIT_FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
         let temp_dir = std::env::temp_dir();
-        let ll_path = temp_dir.join(format!("kria_jit_{}_{}.ll", pid, count));
-        let so_path = temp_dir.join(format!("kria_jit_{}_{}.so", pid, count));
+        let base_name = format!("kria_jit_{}_{}", pid, count);
+        let ir_path = temp_dir.join(format!("{base_name}.ll"));
+        let library_path = temp_dir.join(format!(
+            "{}{}{}",
+            std::env::consts::DLL_PREFIX,
+            base_name,
+            std::env::consts::DLL_SUFFIX
+        ));
+        #[cfg(target_os = "windows")]
+        let import_library_path = Some(temp_dir.join(format!("{base_name}.lib")));
+        #[cfg(not(target_os = "windows"))]
+        let import_library_path = None;
+        let artifacts = JitArtifacts {
+            ir_path: ir_path.clone(),
+            library_path: library_path.clone(),
+            import_library_path,
+        };
 
-        fs::write(&ll_path, &ir)
+        fs::write(&ir_path, &ir)
             .map_err(|e| format!("Failed to write LLVM IR temporary file: {}", e))?;
 
         let opt_flag = format!("-O{}", self.opt_level);
-        let output = Command::new("clang")
-            .arg(&opt_flag)
-            .arg("-shared")
-            .arg("-fPIC")
-            .arg(&ll_path)
-            .arg("-o")
-            .arg(&so_path)
+        let mut clang = Command::new("clang");
+        clang.arg(&opt_flag);
+        configure_shared_library_command(&mut clang, &library_path, &ir_path, module);
+        let output = clang
             .output()
             .map_err(|e| format!("Failed to execute clang: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let _ = fs::remove_file(&ll_path);
-            let _ = fs::remove_file(&so_path);
-            return Err(format!("LLVM JIT compilation failed via clang:\n{}", stderr));
+            return Err(format!(
+                "LLVM JIT compilation failed via clang:\n{}",
+                stderr
+            ));
         }
 
-        let so_c_str = CString::new(so_path.to_string_lossy().as_bytes())
-            .map_err(|e| format!("Invalid path string: {}", e))?;
-
-        let handle = unsafe { libc::dlopen(so_c_str.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        if handle.is_null() {
-            let err = unsafe {
-                let err_ptr = libc::dlerror();
-                if err_ptr.is_null() {
-                    "Unknown dlopen error".to_string()
-                } else {
-                    CStr::from_ptr(err_ptr).to_string_lossy().to_string()
-                }
-            };
-            let _ = fs::remove_file(&ll_path);
-            let _ = fs::remove_file(&so_path);
-            return Err(format!("Failed to load JIT shared library: {}", err));
-        }
+        let library = unsafe { Library::new(&library_path) }
+            .map_err(|e| format!("Failed to load JIT shared library: {}", e))?;
 
         let mut function_ptrs = Vec::with_capacity(module.functions.len());
 
         // Resolve function pointers for closures
         for i in 0..module.functions.len() {
-            let sym_name = CString::new(format!("kria_func_{}", i)).unwrap();
-            let fn_ptr = unsafe { libc::dlsym(handle, sym_name.as_ptr()) };
-            if fn_ptr.is_null() {
-                unsafe { libc::dlclose(handle) };
-                let _ = fs::remove_file(&ll_path);
-                let _ = fs::remove_file(&so_path);
-                return Err(format!("Failed to resolve symbol kria_func_{}", i));
-            }
-            let typed_fn: runtime::JitFn = unsafe { std::mem::transmute(fn_ptr) };
+            let symbol_name = format!("kria_func_{}\0", i);
+            let typed_fn = unsafe {
+                *library
+                    .get::<runtime::JitFn>(symbol_name.as_bytes())
+                    .map_err(|e| format!("Failed to resolve symbol kria_func_{}: {}", i, e))?
+            };
             function_ptrs.push(typed_fn);
         }
 
         // Resolve entry point
-        let entry_sym = CString::new("kria_entry").unwrap();
-        let entry_ptr = unsafe { libc::dlsym(handle, entry_sym.as_ptr()) };
-        if entry_ptr.is_null() {
-            unsafe { libc::dlclose(handle) };
-            let _ = fs::remove_file(&ll_path);
-            let _ = fs::remove_file(&so_path);
-            return Err("Failed to resolve symbol kria_entry".to_string());
-        }
-
-        type EntryFn = extern "C" fn(*mut KriaContext, *const KriaRuntime);
-        let entry_fn: EntryFn = unsafe { std::mem::transmute(entry_ptr) };
+        let entry_fn = unsafe {
+            *library
+                .get::<extern "C" fn(*mut KriaContext, *const KriaRuntime)>(b"kria_entry\0")
+                .map_err(|e| format!("Failed to resolve symbol kria_entry: {}", e))?
+        };
 
         Ok(CompiledJit {
-            handle,
-            ll_path,
-            so_path,
+            library: Some(library),
+            _artifacts: artifacts,
             entry_fn,
             function_ptrs,
             globals_count: module.globals.len(),
@@ -170,4 +164,33 @@ impl LlvmJit {
         let compiled = self.compile(module)?;
         compiled.run()
     }
+}
+
+fn configure_shared_library_command(
+    command: &mut Command,
+    library_path: &std::path::Path,
+    ir_path: &std::path::Path,
+    _module: &SsaModule,
+) {
+    #[cfg(target_os = "windows")]
+    {
+        command.arg("-shared");
+        for i in 0.._module.functions.len() {
+            command.arg(format!("-Wl,/EXPORT:kria_func_{}", i));
+        }
+        command.arg("-Wl,/EXPORT:kria_entry");
+    }
+
+    #[cfg(target_os = "macos")]
+    command.arg("-dynamiclib");
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        command.arg("-shared").arg("-fPIC");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    command.arg("-shared");
+
+    command.arg(ir_path).arg("-o").arg(library_path);
 }
