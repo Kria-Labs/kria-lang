@@ -21,7 +21,7 @@ impl StringValue {
         Self(Arc::new(value))
     }
 
-    fn append(&mut self, suffix: &str) {
+    pub(crate) fn append(&mut self, suffix: &str) {
         if let Some(value) = Arc::get_mut(&mut self.0) {
             value.push_str(suffix);
         } else {
@@ -352,7 +352,7 @@ fn apply_float_op(op: NumericOp, left: f64, right: f64) -> Result<Value, Numeric
 #[derive(Debug, Clone)]
 pub struct ObjectData {
     pub fields: RefCell<IndexMap<Arc<str>, Value>>,
-    shape_version: Cell<u64>,
+    pub(crate) shape_version: Cell<u64>,
 }
 
 /// Monomorphic inline cache: (bytecode, instruction offset) -> object shape and field slot.
@@ -474,7 +474,7 @@ impl std::fmt::Display for Value {
     }
 }
 
-fn new_object() -> Value {
+pub(crate) fn new_object() -> Value {
     Value::Object(Rc::new(ObjectData {
         fields: RefCell::new(IndexMap::new()),
         shape_version: Cell::new(0),

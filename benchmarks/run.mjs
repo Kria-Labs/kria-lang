@@ -57,8 +57,8 @@ function parseArguments(args) {
   if (options.sizes.length === 0 || options.sizes.some((size) => !["small", "large"].includes(size))) {
     throw new Error("--sizes must contain small and/or large");
   }
-  if (options.languages.length === 0 || options.languages.some((language) => !["kria", "register", "stack", "node", "python"].includes(language))) {
-    throw new Error("--languages must contain kria, register, stack, node, and/or python");
+  if (options.languages.length === 0 || options.languages.some((language) => !["kria", "register", "stack", "jit", "llvm", "node", "python"].includes(language))) {
+    throw new Error("--languages must contain kria, register, stack, jit, llvm, node, and/or python");
   }
   return options;
 }
@@ -175,7 +175,7 @@ function resolveRuntimes(options) {
   const kriaBenchmarkBinary = process.env.BENCH_KRIA_BENCH
     ?? join(projectRoot, "target", "release", process.platform === "win32" ? "kria_bench.exe" : "kria_bench");
 
-  if (selected.has("register") || selected.has("stack")) {
+  if (selected.has("register") || selected.has("stack") || selected.has("jit") || selected.has("llvm")) {
     if (options.build && !process.env.BENCH_KRIA_BENCH) {
       console.log("Building Kria release binary...");
       const build = runProcess("cargo", ["build", "--release"], { timeout: 600_000 });
@@ -194,6 +194,12 @@ function resolveRuntimes(options) {
       executionExecutable: kriaBenchmarkBinary,
       startupExecutable: kriaBinary,
       backend: "stack",
+    });
+    if (selected.has("jit") || selected.has("llvm")) runtimes.push({
+      ...runtimeInfo("jit", kriaBinary),
+      executionExecutable: kriaBenchmarkBinary,
+      startupExecutable: kriaBinary,
+      backend: "jit",
     });
   }
   if (selected.has("node")) runtimes.push(runtimeInfo("node", process.execPath));
@@ -221,7 +227,7 @@ function normalizeResult(stdout, label) {
 }
 
 function invoke(runtime, workload, iterations, kriaFile) {
-  if (runtime.name === "register" || runtime.name === "stack") {
+  if (runtime.name === "register" || runtime.name === "stack" || runtime.name === "jit" || runtime.name === "llvm") {
     const result = runProcess(
       workload === "startup" ? runtime.startupExecutable : runtime.executionExecutable,
       [kriaFile],
@@ -501,7 +507,63 @@ function main() {
     };
     writeFileSync(summaryPath, `${JSON.stringify(metadata, null, 2)}\n`);
 
-    console.log("\nWorkload             Size     Runtime   Exec med(ms)  P90(ms)  MAD(ms)  Compile(ms)  Process(ms)  Speedup vs Register");
+    // Generate formatted markdown table matching the benchmark comparison view
+    const workloadNames = {
+      arithmetic: "Arithmetic",
+      branching: "Branching",
+      "nested-loops": "Nested loops",
+      "function-calls": "Function calls",
+      recursion: "Recursion",
+      closures: "Closures",
+      arrays: "Arrays",
+      objects: "Objects",
+      strings: "Strings",
+    };
+    const sizeNames = {
+      small: "Küçük",
+      large: "Büyük",
+    };
+
+    const mdLines = [
+      "| İş yükü | Boyut | Register | JIT | Node.js | Python |",
+      "| :--- | :--- | :--- | :--- | :--- | :--- |",
+    ];
+
+    const uniqueWorkloads = [...new Set(summaries.filter(s => s.workload !== "startup").map(s => s.workload))];
+    const uniqueSizes = [...new Set(summaries.filter(s => s.workload !== "startup").map(s => s.size))];
+
+    for (const w of uniqueWorkloads) {
+      for (const sz of uniqueSizes) {
+        const regRow = summaries.find(s => s.workload === w && s.size === sz && s.runtime === "register");
+        const jitRow = summaries.find(s => s.workload === w && s.size === sz && s.runtime === "jit");
+        const nodeRow = summaries.find(s => s.workload === w && s.size === sz && s.runtime === "node");
+        const pyRow = summaries.find(s => s.workload === w && s.size === sz && s.runtime === "python");
+
+        if (!regRow && !jitRow) continue;
+
+        const regVal = regRow?.median_ms !== undefined ? `${regRow.median_ms.toFixed(3)} ms` : "-";
+        let jitVal = "-";
+        if (jitRow?.median_ms !== undefined) {
+          const valStr = `${jitRow.median_ms.toFixed(3)} ms`;
+          if (regRow?.median_ms !== undefined && jitRow.median_ms < regRow.median_ms) {
+            jitVal = `**${valStr}**`;
+          } else {
+            jitVal = valStr;
+          }
+        }
+        const nodeVal = nodeRow?.median_ms !== undefined ? `${nodeRow.median_ms.toFixed(3)} ms` : "-";
+        const pyVal = pyRow?.median_ms !== undefined ? `${pyRow.median_ms.toFixed(3)} ms` : "-";
+
+        const wTitle = workloadNames[w] || w;
+        const szTitle = sizeNames[sz] || sz;
+        mdLines.push(`| ${wTitle} | ${szTitle} | ${regVal} | ${jitVal} | ${nodeVal} | ${pyVal} |`);
+      }
+    }
+
+    const mdTable = mdLines.join("\n") + "\n";
+    writeFileSync(join(resultDir, "table.md"), mdTable);
+
+    console.log("\n" + mdTable);
     console.log("-".repeat(126));
     for (const row of summaries) {
       const medianText = row.median_ms === undefined ? "ERROR" : row.median_ms.toFixed(3);
