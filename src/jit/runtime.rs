@@ -4,8 +4,16 @@ use crate::vm::{
     apply_numeric_op, new_object, ArrayData, ArrayElements, NumericOp, StringValue, Value,
 };
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+enum HeapIdentity {
+    Array(usize),
+    Object(usize),
+    Closure(usize, usize),
+}
 
 pub type JitFn =
     extern "C" fn(*mut KriaContext, *const KriaRuntime, u64, *const LlvmValue, u32) -> LlvmValue;
@@ -26,7 +34,7 @@ pub struct KriaRuntime {
     ) -> LlvmValue,
     pub index_get_fn: extern "C" fn(*mut KriaContext, LlvmValue, LlvmValue) -> LlvmValue,
     pub index_set_fn: extern "C" fn(*mut KriaContext, LlvmValue, LlvmValue, *const LlvmValue),
-    pub prop_get_fn: extern "C" fn(*mut KriaContext, LlvmValue, *const u8, u32) -> LlvmValue,
+    pub prop_get_fn: extern "C" fn(*mut KriaContext, LlvmValue, u32, *const u8, u32) -> LlvmValue,
     pub prop_set_fn: extern "C" fn(*mut KriaContext, LlvmValue, *const u8, u32, *const LlvmValue),
     pub array_len_fn: extern "C" fn(*mut KriaContext, LlvmValue) -> LlvmValue,
     pub array_push_fn: extern "C" fn(*mut KriaContext, LlvmValue, *const LlvmValue),
@@ -62,6 +70,8 @@ pub struct KriaContext {
     pub constants_ptr: *const LlvmValue,
     pub globals: Vec<LlvmValue>,
     pub heap_objects: Vec<Value>,
+    heap_identities: HashMap<HeapIdentity, usize>,
+    property_cache: HashMap<(u32, usize), (u64, usize)>,
     pub upvalue_cells: Vec<Rc<RefCell<Vec<Value>>>>,
     pub function_ptrs: Vec<JitFn>,
     pub constants: Vec<LlvmValue>,
@@ -78,6 +88,8 @@ impl KriaContext {
             constants_ptr: std::ptr::null(),
             globals,
             heap_objects: Vec::new(),
+            heap_identities: HashMap::new(),
+            property_cache: HashMap::new(),
             upvalue_cells: Vec::new(),
             function_ptrs: Vec::new(),
             constants: Vec::with_capacity(constants.len()),
@@ -88,9 +100,18 @@ impl KriaContext {
             let llvm_val = ctx.from_value(c.clone());
             ctx.constants.push(llvm_val);
         }
-        ctx.globals_ptr = ctx.globals.as_mut_ptr();
-        ctx.constants_ptr = ctx.constants.as_ptr();
+        ctx.sync_abi_pointers();
         ctx
+    }
+
+    pub fn set_function_ptrs(&mut self, function_ptrs: Vec<JitFn>) {
+        self.function_ptrs = function_ptrs;
+        self.sync_abi_pointers();
+    }
+
+    fn sync_abi_pointers(&mut self) {
+        self.globals_ptr = self.globals.as_mut_ptr();
+        self.constants_ptr = self.constants.as_ptr();
     }
 
     pub fn to_value(&self, val: LlvmValue) -> Value {
@@ -118,8 +139,35 @@ impl KriaContext {
             Value::Float(f) => LlvmValue::float(f),
             Value::Boolean(b) => LlvmValue::bool(b),
             heap_val => {
+                let identity = match &heap_val {
+                    Value::Array(array) => Some(HeapIdentity::Array(Rc::as_ptr(array) as usize)),
+                    Value::Object(object) => {
+                        Some(HeapIdentity::Object(Rc::as_ptr(object) as usize))
+                    }
+                    Value::RegisterFunction {
+                        function_index,
+                        captures,
+                    } => Some(HeapIdentity::Closure(
+                        Rc::as_ptr(captures) as usize,
+                        *function_index,
+                    )),
+                    #[cfg(test)]
+                    Value::Function { .. } => None,
+                    Value::String(_) => None,
+                    Value::Null | Value::Number(_) | Value::Float(_) | Value::Boolean(_) => {
+                        unreachable!("primitive values handled above")
+                    }
+                };
+                if let Some(identity) = identity {
+                    if let Some(&idx) = self.heap_identities.get(&identity) {
+                        return LlvmValue::heap(idx);
+                    }
+                }
                 let idx = self.heap_objects.len();
                 self.heap_objects.push(heap_val);
+                if let Some(identity) = identity {
+                    self.heap_identities.insert(identity, idx);
+                }
                 LlvmValue::heap(idx)
             }
         }
@@ -364,24 +412,31 @@ extern "C" fn rt_index_get(
     index: LlvmValue,
 ) -> LlvmValue {
     let ctx = unsafe { &mut *ctx_ptr };
-    let obj = ctx.to_value(object);
-    let idx = ctx.to_value(index);
-
-    let res = match (&obj, &idx) {
-        (Value::Array(arr), Value::Number(n)) => {
-            if *n >= 0 {
-                arr.get_cloned(*n as usize).unwrap_or(Value::Null)
-            } else {
-                Value::Null
+    let res = if object.tag != TAG_HEAP {
+        Value::Null
+    } else {
+        match (ctx.heap_objects.get(object.payload as usize), index.tag) {
+            (Some(Value::Array(array)), TAG_INT) => {
+                let idx = index.payload as i64;
+                if idx >= 0 {
+                    array.get_cloned(idx as usize).unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                }
             }
+            (Some(Value::Object(obj)), TAG_HEAP) => {
+                match ctx.heap_objects.get(index.payload as usize) {
+                    Some(Value::String(key)) => obj
+                        .fields
+                        .borrow()
+                        .get(key.as_str())
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                    _ => Value::Null,
+                }
+            }
+            _ => Value::Null,
         }
-        (Value::Object(o), Value::String(s)) => o
-            .fields
-            .borrow()
-            .get(s.to_arc_str().as_ref())
-            .cloned()
-            .unwrap_or(Value::Null),
-        _ => Value::Null,
     };
     ctx.from_value(res)
 }
@@ -393,20 +448,29 @@ extern "C" fn rt_index_set(
     value_ptr: *const LlvmValue,
 ) {
     let ctx = unsafe { &mut *ctx_ptr };
-    let obj = ctx.to_value(object);
-    let idx = ctx.to_value(index);
     let val = ctx.to_value(unsafe { *value_ptr });
 
-    match (&obj, &idx) {
-        (Value::Array(arr), Value::Number(n)) => {
-            if *n >= 0 {
-                let _ = arr.set_at(*n as usize, val);
+    if object.tag != TAG_HEAP {
+        return;
+    }
+    match (ctx.heap_objects.get(object.payload as usize), index.tag) {
+        (Some(Value::Array(arr)), TAG_INT) => {
+            let idx = index.payload as i64;
+            if idx >= 0 {
+                let _ = arr.set_at(idx as usize, val);
             }
         }
-        (Value::Object(o), Value::String(s)) => {
+        (Some(Value::Object(o)), TAG_HEAP) => {
+            let key = match ctx.heap_objects.get(index.payload as usize) {
+                Some(Value::String(key)) => key.to_arc_str(),
+                _ => return,
+            };
             let mut fields = o.fields.borrow_mut();
-            fields.insert(s.to_arc_str(), val);
-            o.shape_version.set(o.shape_version.get().wrapping_add(1));
+            let is_new = !fields.contains_key(key.as_ref());
+            fields.insert(key, val);
+            if is_new {
+                o.shape_version.set(o.shape_version.get().wrapping_add(1));
+            }
         }
         _ => {}
     }
@@ -415,22 +479,40 @@ extern "C" fn rt_index_set(
 extern "C" fn rt_prop_get(
     ctx_ptr: *mut KriaContext,
     object: LlvmValue,
+    site: u32,
     member_ptr: *const u8,
     member_len: u32,
 ) -> LlvmValue {
     let ctx = unsafe { &mut *ctx_ptr };
     let slice = unsafe { std::slice::from_raw_parts(member_ptr, member_len as usize) };
     let member = std::str::from_utf8(slice).unwrap_or("");
-    let obj = ctx.to_value(object);
-
-    let res = match &obj {
-        Value::Object(o) => o
-            .fields
-            .borrow()
-            .get(member)
-            .cloned()
-            .unwrap_or(Value::Null),
-        _ => Value::Null,
+    let object_index = object.payload as usize;
+    let res = if object.tag != TAG_HEAP {
+        Value::Null
+    } else if let Some(Value::Object(obj)) = ctx.heap_objects.get(object_index) {
+        let version = obj.shape_version.get();
+        let cached = ctx
+            .property_cache
+            .get(&(site, object_index))
+            .filter(|(cached_version, _)| *cached_version == version)
+            .map(|(_, index)| *index);
+        let fields = obj.fields.borrow();
+        if let Some(value) = cached.and_then(|index| fields.get_index(index).map(|(_, v)| v)) {
+            value.clone()
+        } else if let Some(index) = fields.get_index_of(member) {
+            let value = fields.get_index(index).map(|(_, value)| value.clone());
+            if let Some(value) = value {
+                ctx.property_cache
+                    .insert((site, object_index), (version, index));
+                value
+            } else {
+                Value::Null
+            }
+        } else {
+            Value::Null
+        }
+    } else {
+        Value::Null
     };
     ctx.from_value(res)
 }
@@ -450,17 +532,23 @@ extern "C" fn rt_prop_set(
 
     if let Value::Object(o) = &obj {
         let mut fields = o.fields.borrow_mut();
+        let is_new = !fields.contains_key(member);
         fields.insert(Arc::from(member), val);
-        o.shape_version.set(o.shape_version.get().wrapping_add(1));
+        if is_new {
+            o.shape_version.set(o.shape_version.get().wrapping_add(1));
+        }
     }
 }
 
 extern "C" fn rt_array_len(ctx_ptr: *mut KriaContext, object: LlvmValue) -> LlvmValue {
     let ctx = unsafe { &mut *ctx_ptr };
-    let obj = ctx.to_value(object);
-    let len = match &obj {
-        Value::Array(a) => a.len() as i64,
-        _ => 0,
+    let len = if object.tag == TAG_HEAP {
+        match ctx.heap_objects.get(object.payload as usize) {
+            Some(Value::Array(array)) => array.len() as i64,
+            _ => 0,
+        }
+    } else {
+        0
     };
     LlvmValue::int(len)
 }
@@ -518,8 +606,9 @@ extern "C" fn rt_object_del(
     let member = std::str::from_utf8(slice).unwrap_or("");
     let obj = ctx.to_value(object);
     if let Value::Object(o) = &obj {
-        o.fields.borrow_mut().shift_remove(member);
-        o.shape_version.set(o.shape_version.get().wrapping_add(1));
+        if o.fields.borrow_mut().shift_remove(member).is_some() {
+            o.shape_version.set(o.shape_version.get().wrapping_add(1));
+        }
     }
 }
 
@@ -528,8 +617,13 @@ extern "C" fn rt_object_del_key(ctx_ptr: *mut KriaContext, object: LlvmValue, ke
     let obj = ctx.to_value(object);
     let k = ctx.to_value(key);
     if let (Value::Object(o), Value::String(s)) = (&obj, &k) {
-        o.fields.borrow_mut().shift_remove(s.to_arc_str().as_ref());
-        o.shape_version.set(o.shape_version.get().wrapping_add(1));
+        if o.fields
+            .borrow_mut()
+            .shift_remove(s.to_arc_str().as_ref())
+            .is_some()
+        {
+            o.shape_version.set(o.shape_version.get().wrapping_add(1));
+        }
     }
 }
 
@@ -666,14 +760,18 @@ extern "C" fn rt_call_closure(
     num_args: u32,
 ) -> LlvmValue {
     let ctx = unsafe { &mut *ctx_ptr };
-    let callee_val = ctx.to_value(callee);
-
-    if let Value::RegisterFunction {
-        function_index,
-        captures,
-    } = callee_val
-    {
-        let captures_ptr = Rc::as_ptr(&captures) as u64;
+    let closure = if callee.tag == TAG_HEAP {
+        match ctx.heap_objects.get(callee.payload as usize) {
+            Some(Value::RegisterFunction {
+                function_index,
+                captures,
+            }) => Some((*function_index, Rc::as_ptr(captures) as u64)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some((function_index, captures_ptr)) = closure {
         if function_index < ctx.function_ptrs.len() {
             let func = ctx.function_ptrs[function_index];
             func(ctx_ptr, rt_ptr, captures_ptr, args_ptr, num_args)

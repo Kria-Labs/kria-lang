@@ -112,8 +112,8 @@ impl<'a> LlvmCompiler<'a> {
 
     fn emit_header(&mut self) {
         self.out.push_str(
-            r#"%Value = type { i64, i64 }
-%Context = type { %Value*, i64, %Value* }
+            r#"            %Value = type { i64, i64 }
+            %Context = type { %Value*, i64, %Value* }
 %Runtime = type {
     void (%Context*, %Value)*,
     %Value (%Context*, %Value, i8)*,
@@ -728,6 +728,12 @@ ret_true:
                         s.push_str(&format!(
                             "  %b_bi_{tmp} = and i1 %b_li_{tmp}, %b_ri_{tmp}\n"
                         ));
+                        s.push_str(&format!(
+                            "  %b_l_payload_check_{tmp} = extractvalue %Value %b_l_{tmp}, 1\n"
+                        ));
+                        s.push_str(&format!(
+                            "  %b_r_payload_check_{tmp} = extractvalue %Value %b_r_{tmp}, 1\n"
+                        ));
 
                         let cond_name = if matches!(op, BinaryOperator::Divide) {
                             s.push_str(&format!(
@@ -735,7 +741,22 @@ ret_true:
                             ));
                             s.push_str(&format!("  %b_rnz_{tmp} = icmp ne i64 %b_rn_{tmp}, 0\n"));
                             s.push_str(&format!(
-                                "  %b_cond_{tmp} = and i1 %b_bi_{tmp}, %b_rnz_{tmp}\n"
+                                "  %b_lmin_{tmp} = icmp eq i64 %b_l_payload_check_{tmp}, -9223372036854775808\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_rnegone_{tmp} = icmp eq i64 %b_rn_{tmp}, -1\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_div_overflow_{tmp} = and i1 %b_lmin_{tmp}, %b_rnegone_{tmp}\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_div_safe_{tmp} = xor i1 %b_div_overflow_{tmp}, true\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_int_div_safe_{tmp} = and i1 %b_rnz_{tmp}, %b_div_safe_{tmp}\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_cond_{tmp} = and i1 %b_bi_{tmp}, %b_int_div_safe_{tmp}\n"
                             ));
                             format!("%b_cond_{tmp}")
                         } else {
@@ -743,7 +764,7 @@ ret_true:
                         };
 
                         s.push_str(&format!(
-                            "  br i1 {}, label %b_fast_{tmp}, label %b_slow_{tmp}\n\n",
+                            "  br i1 {}, label %b_fast_{tmp}, label %b_check_float_{tmp}\n\n",
                             cond_name
                         ));
 
@@ -860,6 +881,98 @@ ret_true:
 
                         s.push_str(&format!(
                             "  store %Value %b_fval_{tmp}, %Value* %reg_{}\n",
+                            dst.0
+                        ));
+                        s.push_str(&format!("  br label %b_cont_{tmp}\n\n"));
+
+                        s.push_str(&format!("b_check_float_{tmp}:\n"));
+                        s.push_str(&format!(
+                            "  %b_lfloat_tag_{tmp} = icmp eq i64 %b_lt_{tmp}, 2\n"
+                        ));
+                        s.push_str(&format!(
+                            "  %b_rfloat_tag_{tmp} = icmp eq i64 %b_rt_{tmp}, 2\n"
+                        ));
+                        s.push_str(&format!(
+                            "  %b_bf_{tmp} = and i1 %b_lfloat_tag_{tmp}, %b_rfloat_tag_{tmp}\n"
+                        ));
+                        let float_cond = if matches!(op, BinaryOperator::Divide) {
+                            s.push_str(&format!(
+                                "  %b_fr_bits_check_{tmp} = extractvalue %Value %b_r_{tmp}, 1\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_fr_check_{tmp} = bitcast i64 %b_fr_bits_check_{tmp} to double\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_fr_zero_{tmp} = fcmp oeq double %b_fr_check_{tmp}, 0.0\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_fr_nonzero_{tmp} = xor i1 %b_fr_zero_{tmp}, true\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_float_div_safe_{tmp} = and i1 %b_bf_{tmp}, %b_fr_nonzero_{tmp}\n"
+                            ));
+                            format!("%b_float_div_safe_{tmp}")
+                        } else {
+                            format!("%b_bf_{tmp}")
+                        };
+                        s.push_str(&format!(
+                            "  br i1 {}, label %b_fast_float_{tmp}, label %b_slow_{tmp}\n\n",
+                            float_cond
+                        ));
+                        s.push_str(&format!("b_fast_float_{tmp}:\n"));
+                        s.push_str(&format!(
+                            "  %b_fl_bits_{tmp} = extractvalue %Value %b_l_{tmp}, 1\n"
+                        ));
+                        s.push_str(&format!(
+                            "  %b_fr_bits_{tmp} = extractvalue %Value %b_r_{tmp}, 1\n"
+                        ));
+                        s.push_str(&format!(
+                            "  %b_fl_float_{tmp} = bitcast i64 %b_fl_bits_{tmp} to double\n"
+                        ));
+                        s.push_str(&format!(
+                            "  %b_fr_float_{tmp} = bitcast i64 %b_fr_bits_{tmp} to double\n"
+                        ));
+                        let float_comparison = match op {
+                            BinaryOperator::Equals => Some("oeq"),
+                            BinaryOperator::NotEquals => Some("une"),
+                            BinaryOperator::GreaterThan => Some("ogt"),
+                            BinaryOperator::LessThan => Some("olt"),
+                            BinaryOperator::GreaterOrEqual => Some("oge"),
+                            BinaryOperator::LessOrEqual => Some("ole"),
+                            _ => None,
+                        };
+                        if let Some(predicate) = float_comparison {
+                            s.push_str(&format!(
+                                "  %b_float_cmp_{tmp} = fcmp {} double %b_fl_float_{tmp}, %b_fr_float_{tmp}\n",
+                                predicate
+                            ));
+                            s.push_str(&format!(
+                                "  %b_float_bool_{tmp} = zext i1 %b_float_cmp_{tmp} to i64\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_float_val_{tmp} = insertvalue %Value {{ i64 3, i64 0 }}, i64 %b_float_bool_{tmp}, 1\n"
+                            ));
+                        } else {
+                            let float_op = match op {
+                                BinaryOperator::Add => "fadd",
+                                BinaryOperator::Subtract => "fsub",
+                                BinaryOperator::Multiply => "fmul",
+                                BinaryOperator::Divide => "fdiv",
+                                _ => unreachable!(),
+                            };
+                            s.push_str(&format!(
+                                "  %b_float_res_{tmp} = {} double %b_fl_float_{tmp}, %b_fr_float_{tmp}\n",
+                                float_op
+                            ));
+                            s.push_str(&format!(
+                                "  %b_float_bits_{tmp} = bitcast double %b_float_res_{tmp} to i64\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %b_float_val_{tmp} = insertvalue %Value {{ i64 2, i64 0 }}, i64 %b_float_bits_{tmp}, 1\n"
+                            ));
+                        }
+                        s.push_str(&format!(
+                            "  store %Value %b_float_val_{tmp}, %Value* %reg_{}\n",
                             dst.0
                         ));
                         s.push_str(&format!("  br label %b_cont_{tmp}\n\n"));
@@ -991,14 +1104,14 @@ ret_true:
                         callee.0
                     ));
                     s.push_str(&format!(
+                        "  %c_raw_args_{tmp} = getelementptr [{} x %Value], [{} x %Value]* %call_args_buf, i32 0, i32 0\n",
+                        bufs.max_call_args, bufs.max_call_args
+                    ));
+                    s.push_str(&format!(
                         "  %c_fn_ptr_{tmp} = getelementptr %Runtime, %Runtime* %rt, i32 0, i32 23\n"
                     ));
                     s.push_str(&format!(
                         "  %c_fn_{tmp} = load %Value (%Context*, %Runtime*, %Value, %Value*, i32)*, %Value (%Context*, %Runtime*, %Value, %Value*, i32)** %c_fn_ptr_{tmp}\n"
-                    ));
-                    s.push_str(&format!(
-                        "  %c_raw_args_{tmp} = getelementptr [{} x %Value], [{} x %Value]* %call_args_buf, i32 0, i32 0\n",
-                        bufs.max_call_args, bufs.max_call_args
                     ));
                     s.push_str(&format!(
                         "  %c_res_{tmp} = call %Value %c_fn_{tmp}(%Context* %ctx, %Runtime* %rt, %Value %c_callee_{tmp}, %Value* %c_raw_args_{tmp}, i32 {})\n",
@@ -1272,15 +1385,15 @@ ret_true:
                         "  %pg_fn_ptr_{tmp} = getelementptr %Runtime, %Runtime* %rt, i32 0, i32 8\n"
                     ));
                     s.push_str(&format!(
-                        "  %pg_fn_{tmp} = load %Value (%Context*, %Value, i8*, i32)*, %Value (%Context*, %Value, i8*, i32)** %pg_fn_ptr_{tmp}\n"
+                        "  %pg_fn_{tmp} = load %Value (%Context*, %Value, i32, i8*, i32)*, %Value (%Context*, %Value, i32, i8*, i32)** %pg_fn_ptr_{tmp}\n"
                     ));
                     s.push_str(&format!(
                         "  %pg_m_raw_{tmp} = getelementptr inbounds [{} x i8], [{} x i8]* @kria_str_{}, i32 0, i32 0\n",
                         len, len, str_idx
                     ));
                     s.push_str(&format!(
-                        "  %pg_res_{tmp} = call %Value %pg_fn_{tmp}(%Context* %ctx, %Value %pg_o_{tmp}, i8* %pg_m_raw_{tmp}, i32 {})\n",
-                        len
+                        "  %pg_res_{tmp} = call %Value %pg_fn_{tmp}(%Context* %ctx, %Value %pg_o_{tmp}, i32 {}, i8* %pg_m_raw_{tmp}, i32 {})\n",
+                        tmp, len
                     ));
                     s.push_str(&format!(
                         "  store %Value %pg_res_{tmp}, %Value* %reg_{}\n",

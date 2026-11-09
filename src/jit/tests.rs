@@ -19,6 +19,26 @@ fn test_jit_arithmetic_and_print() {
 }
 
 #[test]
+fn test_jit_float_fast_paths() {
+    let ssa = compile_to_ssa(
+        "set left = 1.5\nset right = 2.25\nprint(left + right)\nprint(left < right)\nprint(left / right)\n",
+    );
+    let jit = LlvmJit::new();
+    let ir = jit.compile_to_llvm_ir(&ssa);
+    assert!(ir.contains("fadd double"));
+    assert!(ir.contains("fcmp olt double"));
+    jit.compile(&ssa).unwrap().run().unwrap();
+}
+
+#[test]
+fn test_jit_compiled_artifact_cache_hit() {
+    let ssa = compile_to_ssa("set value = 42\nprint(value)\n");
+    let jit = LlvmJit::new();
+    jit.compile(&ssa).unwrap().run().unwrap();
+    jit.compile(&ssa).unwrap().run().unwrap();
+}
+
+#[test]
 fn test_jit_loads_and_runs_platform_library() {
     let ssa = compile_to_ssa("set value = 42\n");
     let mut jit = LlvmJit::new();
@@ -162,6 +182,26 @@ print(mult(6))
     );
     let mut jit = LlvmJit::new();
     jit.execute(&ssa).unwrap();
+}
+
+#[test]
+fn test_jit_repeated_closure_calls() {
+    let ssa = compile_to_ssa(
+        r#"
+set factor = 3
+set multiply = fn(x) {
+    return x * factor
+}
+set sum = 0
+set i = 0
+while (i < 100000) {
+    set sum = sum + multiply(i)
+    set i = i + 1
+}
+print(sum)
+"#,
+    );
+    LlvmJit::new().execute(&ssa).unwrap();
 }
 
 #[test]

@@ -56,7 +56,9 @@ $env:KRIA_BACKEND="jit"
 
 The JIT requires `clang` on `PATH`. It compiles generated LLVM IR to a
 platform-native shared library (`.dll`, `.dylib`, or `.so`) and loads it through
-a cross-platform dynamic-library API.
+a cross-platform dynamic-library API. Compiled artifacts are cached in the
+operating system's temporary directory, keyed by the generated IR, clang
+version and target, and JIT optimization level.
 
 Remove the environment variable with `unset KRIA_BACKEND` on macOS/Linux or
 `Remove-Item Env:KRIA_BACKEND` in PowerShell to return to the Register VM.
