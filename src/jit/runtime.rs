@@ -1,14 +1,14 @@
 use super::value::{LlvmValue, TAG_BOOL, TAG_FLOAT, TAG_HEAP, TAG_INT, TAG_NULL};
 use crate::ast::BinaryOperator;
 use crate::vm::{
-    apply_numeric_op, new_object, ArrayData, ArrayElements, NumericOp, StringValue,
-    Value,
+    apply_numeric_op, new_object, ArrayData, ArrayElements, NumericOp, StringValue, Value,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub type JitFn = extern "C" fn(*mut KriaContext, *const KriaRuntime, u64, *const LlvmValue, u32) -> LlvmValue;
+pub type JitFn =
+    extern "C" fn(*mut KriaContext, *const KriaRuntime, u64, *const LlvmValue, u32) -> LlvmValue;
 
 #[repr(C)]
 pub struct KriaRuntime {
@@ -40,14 +40,8 @@ pub struct KriaRuntime {
     pub type_fn: extern "C" fn(*mut KriaContext, LlvmValue) -> LlvmValue,
     pub wait_fn: extern "C" fn(*mut KriaContext, LlvmValue) -> LlvmValue,
     pub append_str_global_fn: extern "C" fn(*mut KriaContext, u32, *const u8, u32),
-    pub make_closure_fn: extern "C" fn(
-        *mut KriaContext,
-        u32,
-        *const LlvmValue,
-        *const u8,
-        u32,
-        u64,
-    ) -> LlvmValue,
+    pub make_closure_fn:
+        extern "C" fn(*mut KriaContext, u32, *const LlvmValue, *const u8, u32, u64) -> LlvmValue,
     pub call_closure_fn: extern "C" fn(
         *mut KriaContext,
         *const KriaRuntime,
@@ -471,7 +465,11 @@ extern "C" fn rt_array_len(ctx_ptr: *mut KriaContext, object: LlvmValue) -> Llvm
     LlvmValue::int(len)
 }
 
-extern "C" fn rt_array_push(ctx_ptr: *mut KriaContext, object: LlvmValue, value_ptr: *const LlvmValue) {
+extern "C" fn rt_array_push(
+    ctx_ptr: *mut KriaContext,
+    object: LlvmValue,
+    value_ptr: *const LlvmValue,
+) {
     let ctx = unsafe { &mut *ctx_ptr };
     let obj = ctx.to_value(object);
     let val = ctx.to_value(unsafe { *value_ptr });
@@ -525,11 +523,7 @@ extern "C" fn rt_object_del(
     }
 }
 
-extern "C" fn rt_object_del_key(
-    ctx_ptr: *mut KriaContext,
-    object: LlvmValue,
-    key: LlvmValue,
-) {
+extern "C" fn rt_object_del_key(ctx_ptr: *mut KriaContext, object: LlvmValue, key: LlvmValue) {
     let ctx = unsafe { &mut *ctx_ptr };
     let obj = ctx.to_value(object);
     let k = ctx.to_value(key);
@@ -571,7 +565,9 @@ extern "C" fn rt_type(ctx_ptr: *mut KriaContext, value: LlvmValue) -> LlvmValue 
         Value::String(_) => "string",
         Value::Boolean(_) => "boolean",
         Value::Null => "null",
-        Value::Function { .. } | Value::RegisterFunction { .. } => "function",
+        #[cfg(test)]
+        Value::Function { .. } => "function",
+        Value::RegisterFunction { .. } => "function",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
     };
@@ -682,7 +678,10 @@ extern "C" fn rt_call_closure(
             let func = ctx.function_ptrs[function_index];
             func(ctx_ptr, rt_ptr, captures_ptr, args_ptr, num_args)
         } else {
-            ctx.set_error(format!("Invalid register function index {}", function_index));
+            ctx.set_error(format!(
+                "Invalid register function index {}",
+                function_index
+            ));
             LlvmValue::NULL
         }
     } else {
@@ -691,7 +690,11 @@ extern "C" fn rt_call_closure(
     }
 }
 
-extern "C" fn rt_load_upvalue(_ctx_ptr: *mut KriaContext, captures_ptr: u64, slot: u32) -> LlvmValue {
+extern "C" fn rt_load_upvalue(
+    _ctx_ptr: *mut KriaContext,
+    captures_ptr: u64,
+    slot: u32,
+) -> LlvmValue {
     if captures_ptr != 0 {
         let cell = unsafe { &*(captures_ptr as *const RefCell<Vec<Value>>) };
         let borrowed = cell.borrow();
@@ -725,7 +728,9 @@ extern "C" fn rt_store_upvalue(
 extern "C" fn rt_set_error(ctx_ptr: *mut KriaContext, err_ptr: *const u8, err_len: u32) {
     let ctx = unsafe { &mut *ctx_ptr };
     let slice = unsafe { std::slice::from_raw_parts(err_ptr, err_len as usize) };
-    let msg = std::str::from_utf8(slice).unwrap_or("Runtime error").to_string();
+    let msg = std::str::from_utf8(slice)
+        .unwrap_or("Runtime error")
+        .to_string();
     ctx.set_error(msg);
 }
 

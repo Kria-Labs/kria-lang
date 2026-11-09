@@ -42,7 +42,7 @@ function parseArguments(args) {
   --warmup N                 Warmup runs per workload/runtime (default ${defaults.warmup})
   --runs N                   Measured runs (default ${defaults.runs})
   --sizes small,large        Workload sizes (default small,large)
-  --languages register,stack,jit,node,python  Runtimes to compare
+  --languages register,jit,node,python  Runtimes to compare
   --seed N                   Deterministic run-order shuffle seed
   --output DIR               Result directory (default benchmarks/results/<timestamp>)
   --no-build                 Do not run cargo build --release`);
@@ -57,8 +57,8 @@ function parseArguments(args) {
   if (options.sizes.length === 0 || options.sizes.some((size) => !["small", "large"].includes(size))) {
     throw new Error("--sizes must contain small and/or large");
   }
-  if (options.languages.length === 0 || options.languages.some((language) => !["kria", "register", "stack", "jit", "llvm", "node", "python"].includes(language))) {
-    throw new Error("--languages must contain kria, register, stack, jit, llvm, node, and/or python");
+  if (options.languages.length === 0 || options.languages.some((language) => !["kria", "register", "jit", "llvm", "node", "python"].includes(language))) {
+    throw new Error("--languages must contain kria, register, jit, llvm, node, and/or python");
   }
   return options;
 }
@@ -175,7 +175,7 @@ function resolveRuntimes(options) {
   const kriaBenchmarkBinary = process.env.BENCH_KRIA_BENCH
     ?? join(projectRoot, "target", "release", process.platform === "win32" ? "kria_bench.exe" : "kria_bench");
 
-  if (selected.has("register") || selected.has("stack") || selected.has("jit") || selected.has("llvm")) {
+  if (selected.has("register") || selected.has("jit") || selected.has("llvm")) {
     if (options.build && !process.env.BENCH_KRIA_BENCH) {
       console.log("Building Kria release binary...");
       const build = runProcess("cargo", ["build", "--release"], { timeout: 600_000 });
@@ -188,12 +188,6 @@ function resolveRuntimes(options) {
       executionExecutable: kriaBenchmarkBinary,
       startupExecutable: kriaBinary,
       backend: "register",
-    });
-    if (selected.has("stack")) runtimes.push({
-      ...runtimeInfo("stack", kriaBinary),
-      executionExecutable: kriaBenchmarkBinary,
-      startupExecutable: kriaBinary,
-      backend: "stack",
     });
     if (selected.has("jit") || selected.has("llvm")) runtimes.push({
       ...runtimeInfo("jit", kriaBinary),
@@ -227,7 +221,7 @@ function normalizeResult(stdout, label) {
 }
 
 function invoke(runtime, workload, iterations, kriaFile) {
-  if (runtime.name === "register" || runtime.name === "stack" || runtime.name === "jit" || runtime.name === "llvm") {
+  if (runtime.name === "register" || runtime.name === "jit" || runtime.name === "llvm") {
     const result = runProcess(
       workload === "startup" ? runtime.startupExecutable : runtime.executionExecutable,
       [kriaFile],
@@ -346,7 +340,7 @@ function main() {
         const iterations = workload.sizes[size];
         if (iterations === undefined) continue;
         let kriaFile = null;
-        if (runtimes.some((runtime) => runtime.name === "register" || runtime.name === "stack")) {
+        if (runtimes.some((runtime) => runtime.name === "register" || runtime.name === "jit" || runtime.name === "llvm")) {
           const templatePath = join(benchmarkDir, "kria", `${workload.id}.krx.in`);
           let template = templates.get(templatePath);
           if (template === undefined) {
@@ -491,15 +485,15 @@ function main() {
       measured_runs: options.runs,
       order_seed: options.seed,
       runtimes: runtimes.map(({ name, version }) => ({ name, version })),
-      rust_toolchain: runtimes.some((runtime) => runtime.name === "register" || runtime.name === "stack")
+      rust_toolchain: runtimes.some((runtime) => runtime.name === "register" || runtime.name === "jit")
         ? { cargo: getToolVersion("cargo", ["-V"]), rustc: getToolVersion("rustc", ["-V"]) }
         : null,
       skipped_runtimes: missing,
-      kria_binary_sha256: runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack")
-        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack").executable)).digest("hex")
+      kria_binary_sha256: runtimes.find((runtime) => runtime.name === "register" || runtime.name === "jit")
+        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "register" || runtime.name === "jit").executable)).digest("hex")
         : null,
-      kria_benchmark_runner_sha256: runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack")
-        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "register" || runtime.name === "stack").executionExecutable)).digest("hex")
+      kria_benchmark_runner_sha256: runtimes.find((runtime) => runtime.name === "register" || runtime.name === "jit")
+        ? createHash("sha256").update(readFileSync(runtimes.find((runtime) => runtime.name === "register" || runtime.name === "jit").executionExecutable)).digest("hex")
         : null,
       workloads: selectedWorkloads,
       results: summaries,

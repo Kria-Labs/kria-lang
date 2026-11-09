@@ -42,16 +42,12 @@ cargo build --release
 ./target/release/kria examples/13_imports/main.krx
 ```
 
-Files run with the Register VM by default. Set `KRIA_BACKEND=jit` to use
-the native LLVM-based JIT compiler, or `KRIA_BACKEND=stack` to use
-the legacy stack-based bytecode VM:
+Files and the REPL use the Register VM by default. Set `KRIA_BACKEND=jit` to
+use the experimental native LLVM-based JIT compiler for source files:
 
 ```bash
 # macOS / Linux (LLVM JIT compiler)
 KRIA_BACKEND=jit ./target/release/kria program.krx
-
-# macOS / Linux (Stack VM)
-KRIA_BACKEND=stack ./target/release/kria program.krx
 
 # Windows PowerShell
 $env:KRIA_BACKEND="jit"
@@ -65,9 +61,9 @@ a cross-platform dynamic-library API.
 Remove the environment variable with `unset KRIA_BACKEND` on macOS/Linux or
 `Remove-Item Env:KRIA_BACKEND` in PowerShell to return to the Register VM.
 The backend setting applies to source-file execution; the interactive REPL
-currently uses the stack VM.
+always uses the Register VM.
 
-**REPL:** persistent session, auto-print for expressions, multi-line blocks, `:help` / `:reset` / `:exit`.
+**REPL:** persistent Register VM session, auto-print for expressions, multi-line blocks, `:help` / `:reset` / `:exit`.
 
 ---
 
@@ -129,26 +125,25 @@ Runnable samples live under [`examples/`](examples/):
 ## Architecture
 
 ```text
-Source (.krx) → Lexer → Parser → Compiler/IR lowering → SSA/module → Register VM
-                                       └→ Bytecode/IR optimization → Stack VM
+Source (.krx) → Lexer → Parser → SSA/module → Register VM
+                                      └→ LLVM JIT (experimental)
 ```
 
 - Register VM is the default for source-file execution from the CLI
-- The REPL currently uses the stack VM implementation
+- REPL uses the Register VM with persistent globals and functions
 - SSA register instructions, global/local/upvalue storage, call frames, and closures
-- Stack VM remains available through `KRIA_BACKEND=stack`
-- Legacy flat bytecode, constant pool, call frames, and optimized bytecode for the stack VM
+- LLVM JIT is experimental and can be selected with `KRIA_BACKEND=jit`
 - Hot-loop optimizations for global and local counters, plus specialized global string appends
-- Monomorphic object-property caches, shared closure environments, and IR/bytecode cleanup passes
-- Implementation: [`src/`](src/) (`lexer`, `parser`, `compiler`, `optimizer`,
-  `ir`, `register`, `vm`, `repl`, `modules`, `project`)
+- Monomorphic object-property caches and shared closure environments
+- Implementation: [`src/`](src/) (`lexer`, `parser`, `register`, `vm`, `jit`,
+  `repl`, `modules`, `project`)
 
 ---
 
 ## Benchmarks
 
 The benchmark suite requires Node.js 16.6+ and compares equivalent Register VM,
-Stack VM, Node.js, and Python implementations for numeric work, control flow, calls,
+JIT, Node.js, and Python implementations for numeric work, control flow, calls,
 closures, collections, and strings at two workload sizes. Python is optional;
 missing runtimes are reported as skipped. Workload order is randomized,
 every run's exit status and integer result are validated, and raw samples plus
@@ -172,7 +167,7 @@ By default the runner uses 2 warmups and 7 measured runs. For a quick check:
 node benchmarks/run.mjs --sizes small --warmup 0 --runs 1
 ```
 
-Options include `--sizes small,large`, `--languages register,stack,jit,node,python`,
+Options include `--sizes small,large`, `--languages register,jit,node,python`,
 `--warmup N`, `--runs N`, and `--seed N`. Set `BENCH_PYTHON` to select a Python
 interpreter, `BENCH_KRIA` to choose the Kria startup-baseline executable, or
 `BENCH_KRIA_BENCH` to choose the timed Kria harness. Results include median,

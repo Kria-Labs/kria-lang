@@ -1,9 +1,8 @@
 use std::env;
 use std::process;
 
-use kria::project::{compile_entry_file, compile_register_entry_file};
+use kria::project::compile_register_entry_file;
 use kria::vm::RegisterVM;
-use kria::vm::VM;
 
 fn print_usage(program: &str) {
     eprintln!("Kria programming language");
@@ -21,22 +20,25 @@ fn print_version() {
 
 fn run_file(filename: &str) -> Result<(), String> {
     let path = std::path::Path::new(filename);
-    let backend = env::var("KRIA_BACKEND").unwrap_or_else(|_| "register".to_string()).to_lowercase();
+    let backend = env::var("KRIA_BACKEND")
+        .unwrap_or_else(|_| "register".to_string())
+        .to_lowercase();
     match backend.as_str() {
-        "stack" => {
-            let bytecode = compile_entry_file(path)?;
-            let mut vm = VM::new();
-            vm.execute(&bytecode)?;
-        }
         "jit" | "llvm" => {
             let module = compile_register_entry_file(path)?;
             let mut jit = kria::jit::LlvmJit::new();
             jit.execute(&module)?;
         }
-        _ => {
+        "register" => {
             let module = compile_register_entry_file(path)?;
             let mut vm = RegisterVM::new();
             vm.execute(&module)?;
+        }
+        unsupported => {
+            return Err(format!(
+                "Unsupported backend '{}'. Use 'register' or 'jit'.",
+                unsupported
+            ));
         }
     }
     Ok(())

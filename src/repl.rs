@@ -1,33 +1,30 @@
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use crate::compiler::Compiler;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::vm::VM;
+use crate::register::ModuleLowerer;
+use crate::vm::RegisterVM;
 
 const PROMPT: &str = "kria> ";
 const CONT_PROMPT: &str = "kria...> ";
 
 pub struct ReplSession {
-    compiler: Compiler,
-    vm: VM,
-    next_ip: usize,
+    lowerer: ModuleLowerer,
+    vm: RegisterVM,
 }
 
 impl ReplSession {
     pub fn new() -> Self {
         ReplSession {
-            compiler: Compiler::new(),
-            vm: VM::new(),
-            next_ip: 0,
+            lowerer: ModuleLowerer::new(),
+            vm: RegisterVM::new(),
         }
     }
 
     fn reset(&mut self) {
-        self.compiler = Compiler::new();
-        self.vm = VM::new();
-        self.next_ip = 0;
+        self.lowerer = ModuleLowerer::new();
+        self.vm = RegisterVM::new();
         println!("Session reset.");
     }
 
@@ -43,9 +40,13 @@ impl ReplSession {
             }
         }
 
-        self.compiler.compile_repl(&statements)?;
-        let bytecode = self.compiler.bytecode();
-        self.next_ip = self.vm.execute_from(bytecode, self.next_ip)?;
+        let mut statements = statements;
+        if let Some(crate::ast::Statement::Expression(expression)) = statements.last().cloned() {
+            let last = statements.len() - 1;
+            statements[last] = crate::ast::Statement::Print(expression);
+        }
+        let module = self.lowerer.lower_module(&statements)?;
+        self.vm.execute_incremental(&module)?;
         Ok(())
     }
 
@@ -249,7 +250,27 @@ mod tests {
         let mut session = ReplSession::new();
         session.eval("set x = 10").unwrap();
         session.eval("x + 5").unwrap();
+        assert_eq!(
+            session
+                .vm
+                .global(session.lowerer.context.borrow().globals["x"] as usize),
+            crate::vm::Value::Number(10)
+        );
+        session.eval("fn add_x(n) { return x + n }").unwrap();
+        session.eval("set result = add_x(5)").unwrap();
+        assert_eq!(
+            session
+                .vm
+                .global(session.lowerer.context.borrow().globals["result"] as usize),
+            crate::vm::Value::Number(15)
+        );
         session.reset();
         session.eval("set y = 1").unwrap();
+        assert_eq!(
+            session
+                .vm
+                .global(session.lowerer.context.borrow().globals["y"] as usize),
+            crate::vm::Value::Number(1)
+        );
     }
 }

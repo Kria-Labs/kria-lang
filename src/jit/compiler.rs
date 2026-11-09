@@ -1,5 +1,7 @@
 use crate::ast::BinaryOperator;
-use crate::register::{CaptureKind, SsaBlock, SsaFunction, SsaInstruction, SsaModule, SsaTerminator};
+use crate::register::{
+    CaptureKind, SsaBlock, SsaFunction, SsaInstruction, SsaModule, SsaTerminator,
+};
 use crate::vm::Value;
 use std::collections::HashMap;
 
@@ -304,13 +306,34 @@ ret_true:
             }
         }
 
-        s.push_str(&format!("  %call_args_buf = alloca [{} x %Value]\n", max_call_args));
-        s.push_str(&format!("  %mc_caps_buf = alloca [{} x %Value]\n", max_closure_caps));
-        s.push_str(&format!("  %mc_kinds_buf = alloca [{} x i8]\n", max_closure_caps));
-        s.push_str(&format!("  %ba_buf = alloca [{} x %Value]\n", max_array_elems));
-        s.push_str(&format!("  %bo_k_buf = alloca [{} x i8*]\n", max_obj_fields));
-        s.push_str(&format!("  %bo_l_buf = alloca [{} x i32]\n", max_obj_fields));
-        s.push_str(&format!("  %bo_v_buf = alloca [{} x %Value]\n", max_obj_fields));
+        s.push_str(&format!(
+            "  %call_args_buf = alloca [{} x %Value]\n",
+            max_call_args
+        ));
+        s.push_str(&format!(
+            "  %mc_caps_buf = alloca [{} x %Value]\n",
+            max_closure_caps
+        ));
+        s.push_str(&format!(
+            "  %mc_kinds_buf = alloca [{} x i8]\n",
+            max_closure_caps
+        ));
+        s.push_str(&format!(
+            "  %ba_buf = alloca [{} x %Value]\n",
+            max_array_elems
+        ));
+        s.push_str(&format!(
+            "  %bo_k_buf = alloca [{} x i8*]\n",
+            max_obj_fields
+        ));
+        s.push_str(&format!(
+            "  %bo_l_buf = alloca [{} x i32]\n",
+            max_obj_fields
+        ));
+        s.push_str(&format!(
+            "  %bo_v_buf = alloca [{} x %Value]\n",
+            max_obj_fields
+        ));
 
         s.push_str("  br label %block_0\n\n");
 
@@ -488,12 +511,8 @@ ret_true:
                         s.push_str(&format!(
                             "  %u_truthy_{tmp} = call i1 @kria_is_truthy(%Value %u_val_{tmp})\n"
                         ));
-                        s.push_str(&format!(
-                            "  %u_not_{tmp} = xor i1 %u_truthy_{tmp}, true\n"
-                        ));
-                        s.push_str(&format!(
-                            "  %u_ext_{tmp} = zext i1 %u_not_{tmp} to i64\n"
-                        ));
+                        s.push_str(&format!("  %u_not_{tmp} = xor i1 %u_truthy_{tmp}, true\n"));
+                        s.push_str(&format!("  %u_ext_{tmp} = zext i1 %u_not_{tmp} to i64\n"));
                         s.push_str(&format!(
                             "  store %Value {{ i64 3, i64 0 }}, %Value* %reg_{}\n",
                             dst.0
@@ -507,7 +526,12 @@ ret_true:
                         ));
                     }
                 }
-                SsaInstruction::BinaryInt { dst, op, left, right } => {
+                SsaInstruction::BinaryInt {
+                    dst,
+                    op,
+                    left,
+                    right,
+                } => {
                     let tmp = self.fresh_id();
                     s.push_str(&format!(
                         "  %bi_l_{tmp} = load %Value, %Value* %reg_{}\n",
@@ -624,9 +648,7 @@ ret_true:
                             ));
                         }
                         BinaryOperator::And | BinaryOperator::Or => {
-                            s.push_str(&format!(
-                                "  %bi_val_{tmp} = {{ i64 0, i64 0 }}\n"
-                            ));
+                            s.push_str(&format!("  %bi_val_{tmp} = {{ i64 0, i64 0 }}\n"));
                         }
                     }
                     s.push_str(&format!(
@@ -634,7 +656,12 @@ ret_true:
                         dst.0
                     ));
                 }
-                SsaInstruction::Binary { dst, op, left, right } => {
+                SsaInstruction::Binary {
+                    dst,
+                    op,
+                    left,
+                    right,
+                } => {
                     let tmp = self.fresh_id();
                     s.push_str(&format!(
                         "  %b_l_{tmp} = load %Value, %Value* %reg_{}\n",
@@ -655,9 +682,7 @@ ret_true:
                         s.push_str(&format!(
                             "  %b_and_{tmp} = and i1 %b_lt_{tmp}, %b_rt_{tmp}\n"
                         ));
-                        s.push_str(&format!(
-                            "  %b_ext_{tmp} = zext i1 %b_and_{tmp} to i64\n"
-                        ));
+                        s.push_str(&format!("  %b_ext_{tmp} = zext i1 %b_and_{tmp} to i64\n"));
                         s.push_str(&format!(
                             "  %b_val_{tmp} = insertvalue %Value {{ i64 3, i64 0 }}, i64 %b_ext_{tmp}, 1\n"
                         ));
@@ -672,12 +697,8 @@ ret_true:
                         s.push_str(&format!(
                             "  %b_rt_{tmp} = call i1 @kria_is_truthy(%Value %b_r_{tmp})\n"
                         ));
-                        s.push_str(&format!(
-                            "  %b_or_{tmp} = or i1 %b_lt_{tmp}, %b_rt_{tmp}\n"
-                        ));
-                        s.push_str(&format!(
-                            "  %b_ext_{tmp} = zext i1 %b_or_{tmp} to i64\n"
-                        ));
+                        s.push_str(&format!("  %b_or_{tmp} = or i1 %b_lt_{tmp}, %b_rt_{tmp}\n"));
+                        s.push_str(&format!("  %b_ext_{tmp} = zext i1 %b_or_{tmp} to i64\n"));
                         s.push_str(&format!(
                             "  %b_val_{tmp} = insertvalue %Value {{ i64 3, i64 0 }}, i64 %b_ext_{tmp}, 1\n"
                         ));
@@ -693,12 +714,8 @@ ret_true:
                         s.push_str(&format!(
                             "  %b_rt_{tmp} = extractvalue %Value %b_r_{tmp}, 0\n"
                         ));
-                        s.push_str(&format!(
-                            "  %b_li_{tmp} = icmp eq i64 %b_lt_{tmp}, 1\n"
-                        ));
-                        s.push_str(&format!(
-                            "  %b_ri_{tmp} = icmp eq i64 %b_rt_{tmp}, 1\n"
-                        ));
+                        s.push_str(&format!("  %b_li_{tmp} = icmp eq i64 %b_lt_{tmp}, 1\n"));
+                        s.push_str(&format!("  %b_ri_{tmp} = icmp eq i64 %b_rt_{tmp}, 1\n"));
                         s.push_str(&format!(
                             "  %b_bi_{tmp} = and i1 %b_li_{tmp}, %b_ri_{tmp}\n"
                         ));
@@ -707,9 +724,7 @@ ret_true:
                             s.push_str(&format!(
                                 "  %b_rn_{tmp} = extractvalue %Value %b_r_{tmp}, 1\n"
                             ));
-                            s.push_str(&format!(
-                                "  %b_rnz_{tmp} = icmp ne i64 %b_rn_{tmp}, 0\n"
-                            ));
+                            s.push_str(&format!("  %b_rnz_{tmp} = icmp ne i64 %b_rn_{tmp}, 0\n"));
                             s.push_str(&format!(
                                 "  %b_cond_{tmp} = and i1 %b_bi_{tmp}, %b_rnz_{tmp}\n"
                             ));
@@ -892,7 +907,11 @@ ret_true:
                         "  call void %p_fn_{tmp}(%Context* %ctx, %Value %p_val_{tmp})\n"
                     ));
                 }
-                SsaInstruction::Input { dst, prompt, type_mask } => {
+                SsaInstruction::Input {
+                    dst,
+                    prompt,
+                    type_mask,
+                } => {
                     let tmp = self.fresh_id();
                     s.push_str(&format!(
                         "  %in_fn_ptr_{tmp} = getelementptr %Runtime, %Runtime* %rt, i32 0, i32 1\n"
@@ -913,7 +932,11 @@ ret_true:
                         dst.0
                     ));
                 }
-                SsaInstruction::CallDirect { dst, function_index, args } => {
+                SsaInstruction::CallDirect {
+                    dst,
+                    function_index,
+                    args,
+                } => {
                     let tmp = self.fresh_id();
                     let mut arg_strs = Vec::new();
                     for (ai, arg) in args.iter().enumerate() {
@@ -977,7 +1000,11 @@ ret_true:
                         dst.0
                     ));
                 }
-                SsaInstruction::MakeClosure { dst, function, captures } => {
+                SsaInstruction::MakeClosure {
+                    dst,
+                    function,
+                    captures,
+                } => {
                     let tmp = self.fresh_id();
                     let count = captures.len();
                     for (ci, cap) in captures.iter().enumerate() {
@@ -1064,7 +1091,11 @@ ret_true:
                         cap_id, slot, value.0
                     ));
                 }
-                SsaInstruction::BuildArray { dst, elements, mutable } => {
+                SsaInstruction::BuildArray {
+                    dst,
+                    elements,
+                    mutable,
+                } => {
                     let tmp = self.fresh_id();
                     let count = elements.len();
                     for (ei, elem) in elements.iter().enumerate() {
@@ -1191,7 +1222,11 @@ ret_true:
                         dst.0
                     ));
                 }
-                SsaInstruction::IndexSet { object, index, value } => {
+                SsaInstruction::IndexSet {
+                    object,
+                    index,
+                    value,
+                } => {
                     let tmp = self.fresh_id();
                     s.push_str(&format!(
                         "  %is_o_{tmp} = load %Value, %Value* %reg_{}\n",
@@ -1212,7 +1247,11 @@ ret_true:
                         value.0
                     ));
                 }
-                SsaInstruction::PropertyGet { dst, object, member } => {
+                SsaInstruction::PropertyGet {
+                    dst,
+                    object,
+                    member,
+                } => {
                     let tmp = self.fresh_id();
                     let str_idx = self.intern_string(member);
                     let len = member.len();
@@ -1239,7 +1278,11 @@ ret_true:
                         dst.0
                     ));
                 }
-                SsaInstruction::PropertySet { object, member, value } => {
+                SsaInstruction::PropertySet {
+                    object,
+                    member,
+                    value,
+                } => {
                     let tmp = self.fresh_id();
                     let str_idx = self.intern_string(member);
                     let len = member.len();
@@ -1551,7 +1594,12 @@ ret_true:
                         slot, len
                     ));
                 }
-                SsaInstruction::LoopIncLess { slot, limit, step, local } => {
+                SsaInstruction::LoopIncLess {
+                    slot,
+                    limit,
+                    step,
+                    local,
+                } => {
                     let tmp = self.fresh_id();
                     s.push_str(&format!("  br label %loop_inc_cond_{tmp}\n"));
                     s.push_str(&format!("loop_inc_cond_{tmp}:\n"));
@@ -1635,7 +1683,11 @@ ret_true:
             SsaTerminator::Jump(target) => {
                 s.push_str(&format!("  br label %block_{}\n", target.0));
             }
-            SsaTerminator::Branch { condition, then_block, else_block } => {
+            SsaTerminator::Branch {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 let tmp = self.fresh_id();
                 s.push_str(&format!(
                     "  %br_c_{tmp} = load %Value, %Value* %reg_{}\n",
@@ -1649,7 +1701,13 @@ ret_true:
                     then_block.0, else_block.0
                 ));
             }
-            SsaTerminator::CompareLessConst { slot, limit, local, then_block, else_block } => {
+            SsaTerminator::CompareLessConst {
+                slot,
+                limit,
+                local,
+                then_block,
+                else_block,
+            } => {
                 let tmp = self.fresh_id();
                 if *local {
                     s.push_str(&format!(
@@ -1683,7 +1741,10 @@ ret_true:
                     then_block.0, else_block.0
                 ));
             }
-            SsaTerminator::TailCall { function_index, args } => {
+            SsaTerminator::TailCall {
+                function_index,
+                args,
+            } => {
                 let tmp = self.fresh_id();
                 let mut arg_strs = Vec::new();
                 for (ai, arg) in args.iter().enumerate() {
@@ -1816,9 +1877,7 @@ fn lower_windows_runtime_abi(ir: &str) -> String {
                     let name = format!("%kria_abi_{temporary_index}_out");
                     temporary_index += 1;
                     function_lines.push(format!("  {name} = alloca %Value, align 8"));
-                    call_arguments.push(format!(
-                        "%Value* sret([16 x i8]) align 8 {name}"
-                    ));
+                    call_arguments.push(format!("%Value* sret([16 x i8]) align 8 {name}"));
                     Some(name)
                 } else {
                     None
@@ -1948,11 +2007,15 @@ fn loaded_runtime_callback(line: &str) -> Option<(String, String, String)> {
     let (name, expression) = line.trim().split_once(" = load ")?;
     let parts = split_llvm_arguments(expression);
     let function_type = parts.first()?.trim().strip_suffix('*')?.trim();
-    let pointer_name = expression.rsplit_once(' ')? .1.trim();
+    let pointer_name = expression.rsplit_once(' ')?.1.trim();
     if !function_type.contains('(') || !pointer_name.starts_with('%') {
         return None;
     }
-    Some((name.to_string(), function_type.to_string(), pointer_name.to_string()))
+    Some((
+        name.to_string(),
+        function_type.to_string(),
+        pointer_name.to_string(),
+    ))
 }
 
 #[cfg(target_os = "windows")]

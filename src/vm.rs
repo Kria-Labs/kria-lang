@@ -1,5 +1,6 @@
-use crate::bytecode::*;
 use crate::ast::BinaryOperator;
+#[cfg(test)]
+use crate::bytecode::*;
 use indexmap::IndexMap;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -158,6 +159,7 @@ pub enum Value {
     String(StringValue),
     Boolean(bool),
     Null,
+    #[cfg(test)]
     Function {
         bytecode_offset: usize,
         num_params: u32,
@@ -242,7 +244,6 @@ fn apply_register_int_op(
         BinaryOperator::And | BinaryOperator::Or => Err(NumericError::NotNumeric),
     }
 }
-
 
 fn apply_mixed_numeric_op(
     op: NumericOp,
@@ -356,6 +357,7 @@ pub struct ObjectData {
 }
 
 /// Monomorphic inline cache: (bytecode, instruction offset) -> object shape and field slot.
+#[cfg(test)]
 type ObjectGetCache = HashMap<(usize, usize), (usize, u64, usize)>;
 
 impl PartialEq for Value {
@@ -372,6 +374,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::Null, Value::Null) => true,
+            #[cfg(test)]
             (
                 Value::Function {
                     bytecode_offset: a_off,
@@ -385,8 +388,14 @@ impl PartialEq for Value {
                 },
             ) => a_off == b_off && a_params == b_params && *a_up.borrow() == *b_up.borrow(),
             (
-                Value::RegisterFunction { function_index: a, captures: ac },
-                Value::RegisterFunction { function_index: b, captures: bc },
+                Value::RegisterFunction {
+                    function_index: a,
+                    captures: ac,
+                },
+                Value::RegisterFunction {
+                    function_index: b,
+                    captures: bc,
+                },
             ) => a == b && *ac.borrow() == *bc.borrow(),
             (Value::Array(a), Value::Array(b)) => arrays_equal(a, b),
             (Value::Object(a), Value::Object(b)) => objects_equal(a, b),
@@ -423,6 +432,7 @@ impl std::fmt::Display for Value {
             Value::String(s) => write!(f, "{}", s),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::Null => write!(f, "null"),
+            #[cfg(test)]
             Value::Function {
                 bytecode_offset,
                 num_params,
@@ -436,7 +446,10 @@ impl std::fmt::Display for Value {
                     upvalues.borrow().len()
                 )
             }
-            Value::RegisterFunction { function_index, captures } => {
+            Value::RegisterFunction {
+                function_index,
+                captures,
+            } => {
                 write!(
                     f,
                     "<register function {} ({} captures)>",
@@ -481,6 +494,7 @@ pub(crate) fn new_object() -> Value {
     }))
 }
 
+#[cfg(test)]
 fn value_to_string_key(key: Value) -> Result<Arc<str>, String> {
     match key {
         Value::String(s) => Ok(s.to_arc_str()),
@@ -488,10 +502,12 @@ fn value_to_string_key(key: Value) -> Result<Arc<str>, String> {
     }
 }
 
+#[cfg(test)]
 fn arc_key(key: &str) -> Arc<str> {
     Arc::from(key)
 }
 
+#[cfg(test)]
 fn object_get(obj: &Value, key: &str) -> Value {
     match obj {
         Value::Null => Value::Null,
@@ -500,6 +516,7 @@ fn object_get(obj: &Value, key: &str) -> Value {
     }
 }
 
+#[cfg(test)]
 fn object_get_const_cached(
     cache: &mut ObjectGetCache,
     obj: &Value,
@@ -534,6 +551,7 @@ fn object_get_const_cached(
     }
 }
 
+#[cfg(test)]
 fn object_set(obj: &Value, key: &str, value: Value) -> Result<(), String> {
     match obj {
         Value::Object(o) => {
@@ -549,6 +567,7 @@ fn object_set(obj: &Value, key: &str, value: Value) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn object_set_arc(obj: &Value, key: Arc<str>, value: Value) -> Result<(), String> {
     match obj {
         Value::Object(o) => {
@@ -564,6 +583,7 @@ fn object_set_arc(obj: &Value, key: Arc<str>, value: Value) -> Result<(), String
     }
 }
 
+#[cfg(test)]
 fn object_get_or_create(obj: &Value, key: &str) -> Result<Value, String> {
     match obj {
         Value::Object(o) => {
@@ -590,6 +610,7 @@ fn object_get_or_create(obj: &Value, key: &str) -> Result<Value, String> {
     }
 }
 
+#[cfg(test)]
 fn object_delete(obj: &Value, key: &str) -> Result<(), String> {
     match obj {
         Value::Object(o) => {
@@ -603,6 +624,7 @@ fn object_delete(obj: &Value, key: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn index_to_usize(index: Value) -> Result<usize, String> {
     match index {
         Value::Number(n) if n >= 0 => Ok(n as usize),
@@ -611,6 +633,7 @@ fn index_to_usize(index: Value) -> Result<usize, String> {
     }
 }
 
+#[cfg(test)]
 fn parse_input_value(input: &str, has_str: bool, has_int: bool, has_float: bool) -> Option<Value> {
     if has_int {
         if let Ok(value) = input.parse::<i64>() {
@@ -633,6 +656,7 @@ fn parse_input_value(input: &str, has_str: bool, has_int: bool, has_float: bool)
     None
 }
 
+#[cfg(test)]
 fn read_input_line<R: std::io::BufRead>(reader: &mut R) -> Result<String, String> {
     let mut buffer = String::new();
     let bytes_read = reader
@@ -644,6 +668,7 @@ fn read_input_line<R: std::io::BufRead>(reader: &mut R) -> Result<String, String
     Ok(buffer.trim().to_string())
 }
 
+#[cfg(test)]
 fn expect_array(val: Value) -> Result<Rc<ArrayData>, String> {
     match val {
         Value::Array(arr) => Ok(arr),
@@ -651,6 +676,7 @@ fn expect_array(val: Value) -> Result<Rc<ArrayData>, String> {
     }
 }
 
+#[cfg(test)]
 pub struct CallFrame {
     return_addr: usize,
     locals_start: usize, // Index where local variables start in stack
@@ -710,7 +736,6 @@ fn less_than_const(value: &Value, limit: i64) -> Result<bool, String> {
     }
 }
 
-
 pub struct RegisterVM {
     globals: Vec<Value>,
     frames: Vec<Value>,
@@ -737,12 +762,37 @@ impl RegisterVM {
         self.frames.clear();
         self.call_args.clear();
         self.object_get_cache.clear();
+        self.execute_current_module(module)
+    }
+
+    pub fn execute_incremental(
+        &mut self,
+        module: &crate::register::SsaModule,
+    ) -> Result<(), String> {
+        if self.globals.len() < module.globals.len() {
+            self.globals.resize(module.globals.len(), Value::Null);
+        }
+        self.frames.clear();
+        self.call_args.clear();
+        self.object_get_cache.clear();
+        self.execute_current_module(module)
+    }
+
+    fn execute_current_module(
+        &mut self,
+        module: &crate::register::SsaModule,
+    ) -> Result<(), String> {
         let empty = Rc::new(RefCell::new(Vec::new()));
         self.execute_function(&module.entry, 0, &[], &empty, &module.functions)?;
         Ok(())
     }
 
-    fn prepare_frame(&mut self, base: usize, function: &crate::register::SsaFunction, args: &[Value]) -> usize {
+    fn prepare_frame(
+        &mut self,
+        base: usize,
+        function: &crate::register::SsaFunction,
+        args: &[Value],
+    ) -> usize {
         let end = base + function.max_registers as usize + function.local_count as usize;
         if self.frames.len() < end {
             self.frames.resize(end, Value::Null);
@@ -871,7 +921,12 @@ impl RegisterVM {
                         };
                         self.frames[frame_base + dst.0 as usize] = result;
                     }
-                    SsaInstruction::BinaryInt { dst, op, left, right } => {
+                    SsaInstruction::BinaryInt {
+                        dst,
+                        op,
+                        left,
+                        right,
+                    } => {
                         let left_index = frame_base + left.0 as usize;
                         let right_index = frame_base + right.0 as usize;
                         let dst_index = frame_base + dst.0 as usize;
@@ -881,10 +936,17 @@ impl RegisterVM {
                             }
                             _ => Ok(Value::Null),
                         }
-                        .map_err(|error| format!("Register VM integer operation failed: {:?}", error))?;
+                        .map_err(|error| {
+                            format!("Register VM integer operation failed: {:?}", error)
+                        })?;
                         self.frames[dst_index] = result;
                     }
-                    SsaInstruction::Binary { dst, op, left, right } => {
+                    SsaInstruction::Binary {
+                        dst,
+                        op,
+                        left,
+                        right,
+                    } => {
                         let left_index = frame_base + left.0 as usize;
                         let right_index = frame_base + right.0 as usize;
                         let dst_index = frame_base + dst.0 as usize;
@@ -893,11 +955,17 @@ impl RegisterVM {
                                 let result = match op {
                                     BinaryOperator::And => {
                                         matches!(self.frames[left_index], Value::Boolean(true))
-                                            && matches!(self.frames[right_index], Value::Boolean(true))
+                                            && matches!(
+                                                self.frames[right_index],
+                                                Value::Boolean(true)
+                                            )
                                     }
                                     _ => {
                                         matches!(self.frames[left_index], Value::Boolean(true))
-                                            || matches!(self.frames[right_index], Value::Boolean(true))
+                                            || matches!(
+                                                self.frames[right_index],
+                                                Value::Boolean(true)
+                                            )
                                     }
                                 };
                                 self.frames[dst_index] = Value::Boolean(result);
@@ -915,12 +983,13 @@ impl RegisterVM {
                                     (Value::String(_), Value::String(_))
                                 ) =>
                             {
-                                let joined = match (&self.frames[left_index], &self.frames[right_index]) {
-                                    (Value::String(left), Value::String(right)) => {
-                                        StringValue::concat(left, right)
-                                    }
-                                    _ => unreachable!(),
-                                };
+                                let joined =
+                                    match (&self.frames[left_index], &self.frames[right_index]) {
+                                        (Value::String(left), Value::String(right)) => {
+                                            StringValue::concat(left, right)
+                                        }
+                                        _ => unreachable!(),
+                                    };
                                 self.frames[dst_index] = Value::String(joined);
                             }
                             _ if matches!(
@@ -928,13 +997,16 @@ impl RegisterVM {
                                 (Value::Number(_), Value::Number(_))
                             ) =>
                             {
-                                let result = match (&self.frames[left_index], &self.frames[right_index]) {
-                                    (Value::Number(left), Value::Number(right)) => {
-                                        apply_register_int_op(*op, *left, *right)
+                                let result =
+                                    match (&self.frames[left_index], &self.frames[right_index]) {
+                                        (Value::Number(left), Value::Number(right)) => {
+                                            apply_register_int_op(*op, *left, *right)
+                                        }
+                                        _ => unreachable!(),
                                     }
-                                    _ => unreachable!(),
-                                }
-                                .map_err(|error| format!("Register VM integer operation failed: {:?}", error))?;
+                                    .map_err(|error| {
+                                        format!("Register VM integer operation failed: {:?}", error)
+                                    })?;
                                 self.frames[dst_index] = result;
                             }
                             _ => {
@@ -999,9 +1071,10 @@ impl RegisterVM {
                         for value in arg_values {
                             call_args.push(self.frames[frame_base + value.0 as usize].clone());
                         }
-                        let callee_function = functions.get(*function_index as usize).ok_or_else(|| {
-                            format!("Invalid register function index {}", function_index)
-                        })?;
+                        let callee_function =
+                            functions.get(*function_index as usize).ok_or_else(|| {
+                                format!("Invalid register function index {}", function_index)
+                            })?;
                         let caller_end = frame_base
                             + function.max_registers as usize
                             + function.local_count as usize;
@@ -1034,9 +1107,13 @@ impl RegisterVM {
                                 function_index,
                                 captures,
                             } => {
-                                let callee_function = functions.get(function_index).ok_or_else(|| {
-                                    format!("Invalid register function index {}", function_index)
-                                })?;
+                                let callee_function =
+                                    functions.get(function_index).ok_or_else(|| {
+                                        format!(
+                                            "Invalid register function index {}",
+                                            function_index
+                                        )
+                                    })?;
                                 let caller_end = frame_base
                                     + function.max_registers as usize
                                     + function.local_count as usize;
@@ -1082,9 +1159,15 @@ impl RegisterVM {
                         };
                     }
                     SsaInstruction::Return { value } => {
-                        return Ok(value.map(|value| self.frames[frame_base + value.0 as usize].clone()));
+                        return Ok(
+                            value.map(|value| self.frames[frame_base + value.0 as usize].clone())
+                        );
                     }
-                    SsaInstruction::BuildArray { dst, elements, mutable } => {
+                    SsaInstruction::BuildArray {
+                        dst,
+                        elements,
+                        mutable,
+                    } => {
                         let values = elements
                             .iter()
                             .map(|element| self.frames[frame_base + element.0 as usize].clone())
@@ -1134,7 +1217,11 @@ impl RegisterVM {
                         };
                         self.frames[frame_base + dst.0 as usize] = value;
                     }
-                    SsaInstruction::IndexSet { object, index, value } => {
+                    SsaInstruction::IndexSet {
+                        object,
+                        index,
+                        value,
+                    } => {
                         let stored = self.frames[frame_base + value.0 as usize].clone();
                         match (
                             &self.frames[frame_base + object.0 as usize],
@@ -1155,7 +1242,11 @@ impl RegisterVM {
                             _ => {}
                         }
                     }
-                    SsaInstruction::PropertyGet { dst, object, member } => {
+                    SsaInstruction::PropertyGet {
+                        dst,
+                        object,
+                        member,
+                    } => {
                         let value = match &self.frames[frame_base + object.0 as usize] {
                             Value::Object(object) => {
                                 let object_id = Rc::as_ptr(object) as usize;
@@ -1196,9 +1287,14 @@ impl RegisterVM {
                         };
                         self.frames[frame_base + dst.0 as usize] = value;
                     }
-                    SsaInstruction::PropertySet { object, member, value } => {
+                    SsaInstruction::PropertySet {
+                        object,
+                        member,
+                        value,
+                    } => {
                         let stored = self.frames[frame_base + value.0 as usize].clone();
-                        if let Value::Object(object) = &self.frames[frame_base + object.0 as usize] {
+                        if let Value::Object(object) = &self.frames[frame_base + object.0 as usize]
+                        {
                             let mut fields = object.fields.borrow_mut();
                             fields.insert(Arc::from(member.as_str()), stored);
                             object
@@ -1236,13 +1332,15 @@ impl RegisterVM {
                                 .collect(),
                             _ => Vec::new(),
                         };
-                        self.frames[frame_base + dst.0 as usize] = Value::Array(Rc::new(ArrayData {
-                            mutable: true,
-                            elements: ArrayElements::Mutable(RefCell::new(keys)),
-                        }));
+                        self.frames[frame_base + dst.0 as usize] =
+                            Value::Array(Rc::new(ArrayData {
+                                mutable: true,
+                                elements: ArrayElements::Mutable(RefCell::new(keys)),
+                            }));
                     }
                     SsaInstruction::ObjectDelete { object, member } => {
-                        if let Value::Object(object) = &self.frames[frame_base + object.0 as usize] {
+                        if let Value::Object(object) = &self.frames[frame_base + object.0 as usize]
+                        {
                             object.fields.borrow_mut().shift_remove(member.as_str());
                             object
                                 .shape_version
@@ -1254,10 +1352,9 @@ impl RegisterVM {
                             Value::String(text) => Some(text.to_arc_str()),
                             _ => None,
                         };
-                        if let (Some(key_text), Value::Object(object)) = (
-                            key_text,
-                            &self.frames[frame_base + object.0 as usize],
-                        ) {
+                        if let (Some(key_text), Value::Object(object)) =
+                            (key_text, &self.frames[frame_base + object.0 as usize])
+                        {
                             object.fields.borrow_mut().shift_remove(key_text.as_ref());
                             object
                                 .shape_version
@@ -1291,7 +1388,9 @@ impl RegisterVM {
                             Value::String(_) => "string",
                             Value::Boolean(_) => "boolean",
                             Value::Null => "null",
-                            Value::Function { .. } | Value::RegisterFunction { .. } => "function",
+                            #[cfg(test)]
+                            Value::Function { .. } => "function",
+                            Value::RegisterFunction { .. } => "function",
                             Value::Array(_) => "array",
                             Value::Object(_) => "object",
                         };
@@ -1299,8 +1398,12 @@ impl RegisterVM {
                             Value::String(StringValue::from(type_name));
                     }
                     SsaInstruction::Wait { dst, value } => {
-                        if let Value::Number(milliseconds) = self.frames[frame_base + value.0 as usize] {
-                            std::thread::sleep(std::time::Duration::from_millis(milliseconds.max(0) as u64));
+                        if let Value::Number(milliseconds) =
+                            self.frames[frame_base + value.0 as usize]
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                milliseconds.max(0) as u64,
+                            ));
                         }
                         self.frames[frame_base + dst.0 as usize] = Value::Null;
                     }
@@ -1377,7 +1480,10 @@ impl RegisterVM {
                             .cloned()
                             .unwrap_or(Value::Null)
                     } else {
-                        self.globals.get(*slot as usize).cloned().unwrap_or(Value::Null)
+                        self.globals
+                            .get(*slot as usize)
+                            .cloned()
+                            .unwrap_or(Value::Null)
                     };
                     current = if less_than_const(&value, *limit)? {
                         *then_block
@@ -1386,15 +1492,18 @@ impl RegisterVM {
                     };
                 }
                 SsaTerminator::Return(value) => {
-                    return Ok(value.map(|value| self.frames[frame_base + value.0 as usize].clone()));
+                    return Ok(
+                        value.map(|value| self.frames[frame_base + value.0 as usize].clone())
+                    );
                 }
                 SsaTerminator::TailCall {
                     function_index,
                     args,
                 } => {
-                    let callee_function = functions.get(*function_index as usize).ok_or_else(|| {
-                        format!("Invalid register function index {}", function_index)
-                    })?;
+                    let callee_function =
+                        functions.get(*function_index as usize).ok_or_else(|| {
+                            format!("Invalid register function index {}", function_index)
+                        })?;
                     let mut tail_args = std::mem::take(&mut self.call_args);
                     tail_args.clear();
                     tail_args.reserve(args.len());
@@ -1417,6 +1526,7 @@ impl RegisterVM {
     }
 }
 
+#[cfg(test)]
 pub struct VM {
     stack: Vec<Value>,
     globals: Vec<Value>,
@@ -1424,6 +1534,7 @@ pub struct VM {
     object_get_cache: ObjectGetCache,
 }
 
+#[cfg(test)]
 impl VM {
     pub fn new() -> Self {
         VM {

@@ -16,16 +16,46 @@ pub enum CaptureKind {
 
 #[derive(Debug, Clone)]
 pub enum SsaInstruction {
-    Const { dst: ValueId, idx: u32 },
-    Null { dst: ValueId },
-    LoadGlobal { dst: ValueId, slot: u32 },
-    StoreGlobal { slot: u32, value: ValueId },
-    LoadLocal { dst: ValueId, slot: u32 },
-    StoreLocal { slot: u32, value: ValueId },
-    LoadUpvalue { dst: ValueId, slot: u32 },
-    StoreUpvalue { slot: u32, value: ValueId },
-    Move { dst: ValueId, src: ValueId },
-    Unary { dst: ValueId, op: UnaryOperator, value: ValueId },
+    Const {
+        dst: ValueId,
+        idx: u32,
+    },
+    Null {
+        dst: ValueId,
+    },
+    LoadGlobal {
+        dst: ValueId,
+        slot: u32,
+    },
+    StoreGlobal {
+        slot: u32,
+        value: ValueId,
+    },
+    LoadLocal {
+        dst: ValueId,
+        slot: u32,
+    },
+    StoreLocal {
+        slot: u32,
+        value: ValueId,
+    },
+    LoadUpvalue {
+        dst: ValueId,
+        slot: u32,
+    },
+    StoreUpvalue {
+        slot: u32,
+        value: ValueId,
+    },
+    Move {
+        dst: ValueId,
+        src: ValueId,
+    },
+    Unary {
+        dst: ValueId,
+        op: UnaryOperator,
+        value: ValueId,
+    },
     Binary {
         dst: ValueId,
         op: BinaryOperator,
@@ -38,7 +68,9 @@ pub enum SsaInstruction {
         left: ValueId,
         right: ValueId,
     },
-    Print { value: ValueId },
+    Print {
+        value: ValueId,
+    },
     Input {
         dst: ValueId,
         prompt: ValueId,
@@ -59,7 +91,9 @@ pub enum SsaInstruction {
         function: u32,
         captures: Vec<CaptureKind>,
     },
-    Return { value: Option<ValueId> },
+    Return {
+        value: Option<ValueId>,
+    },
     BuildArray {
         dst: ValueId,
         elements: Vec<ValueId>,
@@ -113,14 +147,38 @@ pub enum SsaInstruction {
         object: ValueId,
         key: ValueId,
     },
-    IsArray { dst: ValueId, value: ValueId },
-    IsObject { dst: ValueId, value: ValueId },
-    MemberLength { dst: ValueId, object: ValueId },
-    Type { dst: ValueId, value: ValueId },
-    Wait { dst: ValueId, value: ValueId },
-    AddGlobal { slot: u32, delta: i64 },
-    AddLocal { slot: u32, delta: i64 },
-    AppendStringGlobal { slot: u32, suffix: String },
+    IsArray {
+        dst: ValueId,
+        value: ValueId,
+    },
+    IsObject {
+        dst: ValueId,
+        value: ValueId,
+    },
+    MemberLength {
+        dst: ValueId,
+        object: ValueId,
+    },
+    Type {
+        dst: ValueId,
+        value: ValueId,
+    },
+    Wait {
+        dst: ValueId,
+        value: ValueId,
+    },
+    AddGlobal {
+        slot: u32,
+        delta: i64,
+    },
+    AddLocal {
+        slot: u32,
+        delta: i64,
+    },
+    AppendStringGlobal {
+        slot: u32,
+        suffix: String,
+    },
     LoopIncLess {
         slot: u32,
         limit: i64,
@@ -321,7 +379,10 @@ impl ModuleLowerer {
     }
 
     pub fn bind_import(&mut self, alias: &str, exports: HashMap<String, u32>) {
-        self.context.borrow_mut().imports.insert(alias.to_string(), exports);
+        self.context
+            .borrow_mut()
+            .imports
+            .insert(alias.to_string(), exports);
     }
 
     pub fn resolve_global(&mut self, name: &str) -> u32 {
@@ -450,7 +511,11 @@ impl FunctionLowerer {
             if let Some(&local_slot) = stack[up].locals.get(name) {
                 let mut prev_kind = CaptureKind::Local(local_slot);
                 for target_idx in (up + 1)..=current {
-                    if let Some(pos) = stack[target_idx].upvalue_names.iter().position(|n| n == name) {
+                    if let Some(pos) = stack[target_idx]
+                        .upvalue_names
+                        .iter()
+                        .position(|n| n == name)
+                    {
                         prev_kind = CaptureKind::Upvalue(pos as u32);
                     } else {
                         let new_pos = stack[target_idx].upvalue_names.len() as u32;
@@ -465,7 +530,11 @@ impl FunctionLowerer {
             if let Some(pos) = stack[up].upvalue_names.iter().position(|n| n == name) {
                 let mut prev_kind = CaptureKind::Upvalue(pos as u32);
                 for target_idx in (up + 1)..=current {
-                    if let Some(pos) = stack[target_idx].upvalue_names.iter().position(|n| n == name) {
+                    if let Some(pos) = stack[target_idx]
+                        .upvalue_names
+                        .iter()
+                        .position(|n| n == name)
+                    {
                         prev_kind = CaptureKind::Upvalue(pos as u32);
                     } else {
                         let new_pos = stack[target_idx].upvalue_names.len() as u32;
@@ -582,7 +651,11 @@ impl FunctionLowerer {
                 else_branch,
             } => self.lower_if(branches, else_branch)?,
             Statement::While { condition, body } => self.lower_while(condition, body)?,
-            Statement::IndexAssign { object, index, value } => {
+            Statement::IndexAssign {
+                object,
+                index,
+                value,
+            } => {
                 let object = self.lower_expression(object)?;
                 let index = self.lower_expression(index)?;
                 let value = self.lower_expression(value)?;
@@ -602,12 +675,17 @@ impl FunctionLowerer {
                         value,
                     });
                 } else {
-                    return Err("Register lowering only supports named property assignment".to_string());
+                    return Err(
+                        "Register lowering only supports named property assignment".to_string()
+                    );
                 }
             }
-            Statement::ForIn { key_name, value_name, iterable, body } => {
-                self.lower_for_in(key_name, value_name.as_deref(), iterable, body)?
-            }
+            Statement::ForIn {
+                key_name,
+                value_name,
+                iterable,
+                body,
+            } => self.lower_for_in(key_name, value_name.as_deref(), iterable, body)?,
             Statement::Break => {
                 if let Some((exit, _)) = self.loop_exits.last() {
                     self.current_mut().terminator = SsaTerminator::Jump(*exit);
@@ -622,11 +700,23 @@ impl FunctionLowerer {
                     return Err("continue can only be used inside a loop".to_string());
                 }
             }
-            Statement::FunctionDef { name, params, body, exported } => {
+            Statement::FunctionDef {
+                name,
+                params,
+                body,
+                exported,
+            } => {
                 self.lower_function(name, params, body, *exported)?;
             }
             Statement::Import { alias, .. } => {
-                let exports = self.module.context.borrow().imports.get(alias).cloned().unwrap_or_default();
+                let exports = self
+                    .module
+                    .context
+                    .borrow()
+                    .imports
+                    .get(alias)
+                    .cloned()
+                    .unwrap_or_default();
                 let mut fields = Vec::new();
                 for (export_name, slot) in exports {
                     let value = self.fresh_value();
@@ -634,9 +724,15 @@ impl FunctionLowerer {
                     fields.push((export_name, value));
                 }
                 let object = self.fresh_value();
-                self.emit(SsaInstruction::BuildObject { dst: object, fields });
+                self.emit(SsaInstruction::BuildObject {
+                    dst: object,
+                    fields,
+                });
                 let alias_slot = self.module.context.borrow_mut().resolve_global(&alias);
-                self.emit(SsaInstruction::StoreGlobal { slot: alias_slot, value: object });
+                self.emit(SsaInstruction::StoreGlobal {
+                    slot: alias_slot,
+                    value: object,
+                });
             }
         }
         Ok(())
@@ -662,7 +758,10 @@ impl FunctionLowerer {
             self.current = then_block;
             self.lower_statements(statements)?;
             let then_end = self.current;
-            if matches!(self.block_mut(then_end).terminator, SsaTerminator::Fallthrough) {
+            if matches!(
+                self.block_mut(then_end).terminator,
+                SsaTerminator::Fallthrough
+            ) {
                 self.block_mut(then_end).terminator = SsaTerminator::Jump(merge);
                 branch_ends.push(then_end);
             }
@@ -672,7 +771,10 @@ impl FunctionLowerer {
             self.lower_statements(statements)?;
         }
         let else_end = self.current;
-        if matches!(self.block_mut(else_end).terminator, SsaTerminator::Fallthrough) {
+        if matches!(
+            self.block_mut(else_end).terminator,
+            SsaTerminator::Fallthrough
+        ) {
             self.block_mut(else_end).terminator = SsaTerminator::Jump(merge);
             branch_ends.push(else_end);
         }
@@ -762,7 +864,11 @@ impl FunctionLowerer {
         }
     }
 
-    fn try_inline_named_call(&mut self, name: &str, args: &[Expression]) -> Result<Option<ValueId>, String> {
+    fn try_inline_named_call(
+        &mut self,
+        name: &str,
+        args: &[Expression],
+    ) -> Result<Option<ValueId>, String> {
         let inline = {
             let ctx = self.module.context.borrow();
             ctx.inline_functions.get(name).cloned()
@@ -806,10 +912,14 @@ impl FunctionLowerer {
             return None;
         }
         match (left.as_ref(), right.as_ref()) {
-            (Expression::Identifier(src), Expression::Literal(Literal::Number(step))) if src == name => {
+            (Expression::Identifier(src), Expression::Literal(Literal::Number(step)))
+                if src == name =>
+            {
                 Some((*step, true))
             }
-            (Expression::Literal(Literal::Number(step)), Expression::Identifier(src)) if src == name => {
+            (Expression::Literal(Literal::Number(step)), Expression::Identifier(src))
+                if src == name =>
+            {
                 Some((*step, false))
             }
             _ => None,
@@ -822,10 +932,8 @@ impl FunctionLowerer {
         };
         if let Expression::BinaryOp { left, op, right } = value {
             if *op == BinaryOperator::Add {
-                if let (
-                    Expression::Identifier(src),
-                    Expression::Literal(Literal::String(suffix)),
-                ) = (left.as_ref(), right.as_ref())
+                if let (Expression::Identifier(src), Expression::Literal(Literal::String(suffix))) =
+                    (left.as_ref(), right.as_ref())
                 {
                     if src == name {
                         if let Variable::Global(slot) = var {
@@ -857,10 +965,8 @@ impl FunctionLowerer {
         }
         if let Expression::BinaryOp { left, op, right } = value {
             if *op == BinaryOperator::Subtract {
-                if let (
-                    Expression::Identifier(src),
-                    Expression::Literal(Literal::Number(amount)),
-                ) = (left.as_ref(), right.as_ref())
+                if let (Expression::Identifier(src), Expression::Literal(Literal::Number(amount))) =
+                    (left.as_ref(), right.as_ref())
                 {
                     if src == name {
                         if let (Variable::Global(slot), Some(delta)) = (var, amount.checked_neg()) {
@@ -921,7 +1027,10 @@ impl FunctionLowerer {
         }
         let loop_entry = self.current;
         let header = self.new_block(Some(loop_entry));
-        if matches!(self.block_mut(loop_entry).terminator, SsaTerminator::Fallthrough) {
+        if matches!(
+            self.block_mut(loop_entry).terminator,
+            SsaTerminator::Fallthrough
+        ) {
             self.block_mut(loop_entry).terminator = SsaTerminator::Jump(header);
         }
         self.current = header;
@@ -994,7 +1103,9 @@ impl FunctionLowerer {
                     stack.push(then_block);
                     stack.push(else_block);
                 }
-                SsaTerminator::Fallthrough | SsaTerminator::Return(_) | SsaTerminator::TailCall { .. } => {}
+                SsaTerminator::Fallthrough
+                | SsaTerminator::Return(_)
+                | SsaTerminator::TailCall { .. } => {}
             }
         }
         seen.into_iter().collect()
@@ -1002,10 +1113,12 @@ impl FunctionLowerer {
 
     fn loop_escapes(&self, blocks: &[BlockId]) -> bool {
         blocks.iter().any(|id| {
-            self.blocks[id.0 as usize]
-                .instructions
-                .iter()
-                .any(|inst| matches!(inst, SsaInstruction::Call { .. } | SsaInstruction::MakeClosure { .. }))
+            self.blocks[id.0 as usize].instructions.iter().any(|inst| {
+                matches!(
+                    inst,
+                    SsaInstruction::Call { .. } | SsaInstruction::MakeClosure { .. }
+                )
+            })
         })
     }
 
@@ -1030,7 +1143,8 @@ impl FunctionLowerer {
                         produced.insert(dst.0, *slot);
                         seen.insert(*slot);
                     }
-                    SsaInstruction::StoreGlobal { slot, .. } | SsaInstruction::AddGlobal { slot, .. } => {
+                    SsaInstruction::StoreGlobal { slot, .. }
+                    | SsaInstruction::AddGlobal { slot, .. } => {
                         seen.insert(*slot);
                     }
                     SsaInstruction::AppendStringGlobal { slot, .. } => {
@@ -1083,7 +1197,10 @@ impl FunctionLowerer {
                 seen.insert(slot);
             }
         }
-        let slots: Vec<u32> = seen.into_iter().filter(|slot| !poison.contains(slot)).collect();
+        let slots: Vec<u32> = seen
+            .into_iter()
+            .filter(|slot| !poison.contains(slot))
+            .collect();
         if slots.is_empty() {
             return;
         }
@@ -1105,7 +1222,10 @@ impl FunctionLowerer {
                 match inst {
                     SsaInstruction::LoadGlobal { dst, slot } => {
                         if let Some(&local) = mapping.get(slot) {
-                            *inst = SsaInstruction::LoadLocal { dst: *dst, slot: local };
+                            *inst = SsaInstruction::LoadLocal {
+                                dst: *dst,
+                                slot: local,
+                            };
                         }
                     }
                     SsaInstruction::StoreGlobal { slot, value } => {
@@ -1162,14 +1282,18 @@ impl FunctionLowerer {
             });
         }
         for (offset, inst) in stores.iter().cloned().enumerate() {
-            self.blocks[exit.0 as usize].instructions.insert(offset, inst);
+            self.blocks[exit.0 as usize]
+                .instructions
+                .insert(offset, inst);
         }
         for id in &blocks {
             let positions: Vec<usize> = self.blocks[id.0 as usize]
                 .instructions
                 .iter()
                 .enumerate()
-                .filter_map(|(index, inst)| matches!(inst, SsaInstruction::Return { .. }).then_some(index))
+                .filter_map(|(index, inst)| {
+                    matches!(inst, SsaInstruction::Return { .. }).then_some(index)
+                })
                 .collect();
             if positions.is_empty() {
                 if matches!(
@@ -1233,7 +1357,9 @@ impl FunctionLowerer {
             let mut stack = self.module.scope_stack.borrow_mut();
             let current = stack.len() - 1;
             let index_slot = stack[current].locals.len() as u32;
-            stack[current].locals.insert(format!("__for_index_{}", key_name), index_slot);
+            stack[current]
+                .locals
+                .insert(format!("__for_index_{}", key_name), index_slot);
             let key_slot = index_slot + 1;
             stack[current].locals.insert(key_name.to_string(), key_slot);
             let value_slot = if let Some(v_name) = value_name {
@@ -1246,28 +1372,46 @@ impl FunctionLowerer {
             (index_slot, key_slot, value_slot)
         };
         let zero_value = self.fresh_value();
-        self.emit(SsaInstruction::Const { dst: zero_value, idx: zero_idx });
-        self.emit(SsaInstruction::StoreLocal { slot: index_slot, value: zero_value });
+        self.emit(SsaInstruction::Const {
+            dst: zero_value,
+            idx: zero_idx,
+        });
+        self.emit(SsaInstruction::StoreLocal {
+            slot: index_slot,
+            value: zero_value,
+        });
 
         let collection_value = if value_name.is_some() {
             let keys = self.fresh_value();
-            self.emit(SsaInstruction::ObjectKeys { dst: keys, object: iterable_value });
+            self.emit(SsaInstruction::ObjectKeys {
+                dst: keys,
+                object: iterable_value,
+            });
             keys
         } else {
             iterable_value
         };
 
         let header = self.new_block(Some(self.current));
-        if matches!(self.block_mut(self.current).terminator, SsaTerminator::Fallthrough) {
+        if matches!(
+            self.block_mut(self.current).terminator,
+            SsaTerminator::Fallthrough
+        ) {
             self.block_mut(self.current).terminator = SsaTerminator::Jump(header);
         }
         self.current = header;
         let exit_block = self.new_block(Some(header));
         let body_block = self.new_block(Some(header));
         let index_value = self.fresh_value();
-        self.emit(SsaInstruction::LoadLocal { dst: index_value, slot: index_slot });
+        self.emit(SsaInstruction::LoadLocal {
+            dst: index_value,
+            slot: index_slot,
+        });
         let collection_len = self.fresh_value();
-        self.emit(SsaInstruction::ArrayLen { dst: collection_len, object: collection_value });
+        self.emit(SsaInstruction::ArrayLen {
+            dst: collection_len,
+            object: collection_value,
+        });
         let condition = self.fresh_value();
         self.emit(SsaInstruction::Binary {
             dst: condition,
@@ -1288,7 +1432,10 @@ impl FunctionLowerer {
             object: collection_value,
             index: index_value,
         });
-        self.emit(SsaInstruction::StoreLocal { slot: key_slot, value: item_value });
+        self.emit(SsaInstruction::StoreLocal {
+            slot: key_slot,
+            value: item_value,
+        });
         if value_name.is_some() {
             let value = self.fresh_value();
             self.emit(SsaInstruction::IndexGet {
@@ -1296,7 +1443,10 @@ impl FunctionLowerer {
                 object: iterable_value,
                 index: item_value,
             });
-            self.emit(SsaInstruction::StoreLocal { slot: value_slot, value });
+            self.emit(SsaInstruction::StoreLocal {
+                slot: value_slot,
+                value,
+            });
         }
 
         let continue_block = self.new_block(Some(body_block));
@@ -1306,15 +1456,24 @@ impl FunctionLowerer {
         self.loop_exits.pop();
 
         let continue_entry = self.current;
-        if matches!(self.block_mut(continue_entry).terminator, SsaTerminator::Fallthrough) {
+        if matches!(
+            self.block_mut(continue_entry).terminator,
+            SsaTerminator::Fallthrough
+        ) {
             self.block_mut(continue_entry).terminator = SsaTerminator::Jump(continue_block);
         }
         self.current = continue_block;
         let current_index = self.fresh_value();
-        self.emit(SsaInstruction::LoadLocal { dst: current_index, slot: index_slot });
+        self.emit(SsaInstruction::LoadLocal {
+            dst: current_index,
+            slot: index_slot,
+        });
         let one = self.add_constant(Value::Number(1));
         let one_value = self.fresh_value();
-        self.emit(SsaInstruction::Const { dst: one_value, idx: one });
+        self.emit(SsaInstruction::Const {
+            dst: one_value,
+            idx: one,
+        });
         let next_index = self.fresh_value();
         self.emit(SsaInstruction::Binary {
             dst: next_index,
@@ -1322,7 +1481,10 @@ impl FunctionLowerer {
             left: current_index,
             right: one_value,
         });
-        self.emit(SsaInstruction::StoreLocal { slot: index_slot, value: next_index });
+        self.emit(SsaInstruction::StoreLocal {
+            slot: index_slot,
+            value: next_index,
+        });
         self.current_mut().terminator = SsaTerminator::Jump(header);
         self.block_mut(header).predecessors.push(continue_block);
         self.current = exit_block;
@@ -1370,7 +1532,10 @@ impl FunctionLowerer {
         };
         for (slot, _) in params.iter().enumerate() {
             let value = function.fresh_value();
-            function.emit(SsaInstruction::LoadLocal { dst: value, slot: slot as u32 });
+            function.emit(SsaInstruction::LoadLocal {
+                dst: value,
+                slot: slot as u32,
+            });
         }
         function.lower_statements(body)?;
         if !matches!(function.current_mut().terminator, SsaTerminator::Return(_)) {
@@ -1387,18 +1552,18 @@ impl FunctionLowerer {
         {
             let mut ctx = self.module.context.borrow_mut();
             if ctx.module_functions.len() <= function_index as usize {
-                ctx.module_functions.resize(function_index as usize + 1, ssa_function.clone());
+                ctx.module_functions
+                    .resize(function_index as usize + 1, ssa_function.clone());
             }
             ctx.module_functions[function_index as usize] = ssa_function;
             if self.is_module {
-                ctx.function_globals.insert(name.to_string(), function_index);
+                ctx.function_globals
+                    .insert(name.to_string(), function_index);
             }
             if self.is_module && body.len() == 1 {
                 if let Statement::Return(Some(_)) = &body[0] {
-                    ctx.inline_functions.insert(
-                        name.to_string(),
-                        (params.to_vec(), body.to_vec()),
-                    );
+                    ctx.inline_functions
+                        .insert(name.to_string(), (params.to_vec(), body.to_vec()));
                 }
             }
         }
@@ -1410,7 +1575,10 @@ impl FunctionLowerer {
             captures: frame.captures,
         });
         let global = self.module.context.borrow_mut().resolve_global(name);
-        self.emit(SsaInstruction::StoreGlobal { slot: global, value: dst });
+        self.emit(SsaInstruction::StoreGlobal {
+            slot: global,
+            value: dst,
+        });
         Ok(())
     }
 
@@ -1430,9 +1598,9 @@ impl FunctionLowerer {
             }
             Expression::Literal(Literal::String(value)) => {
                 let dst = self.fresh_value();
-                let idx = self.add_constant(Value::String(
-                    crate::vm::StringValue::from(std::sync::Arc::from(value.as_str())),
-                ));
+                let idx = self.add_constant(Value::String(crate::vm::StringValue::from(
+                    std::sync::Arc::from(value.as_str()),
+                )));
                 self.emit(SsaInstruction::Const { dst, idx });
                 Ok(dst)
             }
@@ -1466,7 +1634,10 @@ impl FunctionLowerer {
                     values.push((name.clone(), self.lower_expression(expression)?));
                 }
                 let dst = self.fresh_value();
-                self.emit(SsaInstruction::BuildObject { dst, fields: values });
+                self.emit(SsaInstruction::BuildObject {
+                    dst,
+                    fields: values,
+                });
                 Ok(dst)
             }
             Expression::Identifier(name) => {
@@ -1602,7 +1773,12 @@ impl FunctionLowerer {
                 }
                 let dst = self.fresh_value();
                 let function_index = if let Variable::Global(_) = callee_var {
-                    self.module.context.borrow().function_globals.get(name).copied()
+                    self.module
+                        .context
+                        .borrow()
+                        .function_globals
+                        .get(name)
+                        .copied()
                 } else {
                     None
                 };
@@ -1613,7 +1789,11 @@ impl FunctionLowerer {
                         args: values,
                     });
                 } else {
-                    self.emit(SsaInstruction::Call { dst, callee, args: values });
+                    self.emit(SsaInstruction::Call {
+                        dst,
+                        callee,
+                        args: values,
+                    });
                 }
                 Ok(dst)
             }
@@ -1624,7 +1804,11 @@ impl FunctionLowerer {
                     values.push(self.lower_expression(arg)?);
                 }
                 let dst = self.fresh_value();
-                self.emit(SsaInstruction::Call { dst, callee, args: values });
+                self.emit(SsaInstruction::Call {
+                    dst,
+                    callee,
+                    args: values,
+                });
                 Ok(dst)
             }
             Expression::Input { types, prompt } => {
@@ -1701,7 +1885,10 @@ impl FunctionLowerer {
                 };
                 for (slot, _) in params.iter().enumerate() {
                     let value = function.fresh_value();
-                    function.emit(SsaInstruction::LoadLocal { dst: value, slot: slot as u32 });
+                    function.emit(SsaInstruction::LoadLocal {
+                        dst: value,
+                        slot: slot as u32,
+                    });
                 }
                 function.lower_statements(body)?;
                 if !matches!(function.current_mut().terminator, SsaTerminator::Return(_)) {
@@ -1718,7 +1905,8 @@ impl FunctionLowerer {
                 {
                     let mut ctx = self.module.context.borrow_mut();
                     if ctx.module_functions.len() <= function_index as usize {
-                        ctx.module_functions.resize(function_index as usize + 1, ssa_function.clone());
+                        ctx.module_functions
+                            .resize(function_index as usize + 1, ssa_function.clone());
                     }
                     ctx.module_functions[function_index as usize] = ssa_function;
                 }
@@ -1776,7 +1964,10 @@ mod tests {
         let module = lowerer.lower_module(&statements).unwrap();
         RegisterVM::new().execute(&module).unwrap();
         assert!(!module.entry.blocks.is_empty());
-        assert!(module.constants.iter().any(|value| matches!(value, Value::Number(10))));
+        assert!(module
+            .constants
+            .iter()
+            .any(|value| matches!(value, Value::Number(10))));
     }
 
     fn global_value(source: &str, name: &str) -> Value {

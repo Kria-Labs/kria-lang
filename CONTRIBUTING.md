@@ -33,24 +33,24 @@ cargo clippy --all-targets -- -D warnings
 |------|---------|
 | `src/lexer.rs` | Tokenization |
 | `src/parser.rs` | AST / syntax |
-| `src/compiler.rs` | Stack bytecode generation and compilation pipeline |
-| `src/ir/` | IR lifting, optimization, SSA utilities, and bytecode emission |
+| `src/compiler.rs` | Legacy bytecode compiler retained for internal tests |
+| `src/ir/` | Legacy bytecode utilities retained for internal tests |
 | `src/register.rs` | Register/SSA lowering and Register VM instructions |
-| `src/optimizer.rs` | Bytecode peephole optimization |
-| `src/bytecode.rs` | Legacy stack bytecode format and instruction helpers |
-| `src/vm.rs` | Stack VM and Register VM implementations |
+| `src/optimizer.rs` | Legacy bytecode optimization retained for internal tests |
+| `src/bytecode.rs` | Legacy bytecode format retained for internal tests |
+| `src/vm.rs` | Register VM implementation |
 | `src/repl.rs` | Interactive REPL |
 | `src/modules.rs` | Multi-file import graph |
-| `src/project.rs` | Entry-file compilation for both VM backends |
+| `src/project.rs` | Entry-file compilation for Register VM and JIT |
 | `examples/` | Sample `.krx` programs |
 | `benchmarks/` | Performance scripts and `.krx` benches |
 
 Register pipeline: **Lexer → Parser → Register/SSA lowering → Register VM**.
 
-Stack pipeline: **Lexer → Parser → Compiler → Bytecode → IR/bytecode optimization → Stack VM**.
+The experimental JIT lowers the Register VM's SSA module to native code.
 
-New syntax usually touches the lexer, parser, and compiler; runtime behavior
-lives in `vm.rs`, while register lowering lives in `register.rs`.
+New syntax usually touches the lexer, parser, and register lowering; runtime
+behavior lives in `vm.rs`.
 
 ## Making changes
 
@@ -60,8 +60,8 @@ lives in `vm.rs`, while register lowering lives in `register.rs`.
 - Add or update an example under `examples/` when behavior is user-visible.
 - Run `cargo test`, `cargo test --all-targets`, and at least `test.krx` plus
   any related example before submitting.
-- Test language/runtime changes with both backends when appropriate:
-  `KRIA_BACKEND=register` (default) and `KRIA_BACKEND=stack`.
+- Test language/runtime changes with the default Register VM and experimental
+  JIT when appropriate: `KRIA_BACKEND=register` and `KRIA_BACKEND=jit`.
 - If you change performance-sensitive paths, consider running `./benchmarks/benchmarks.sh` (or `.\benchmarks\benchmarks.ps1` on Windows) and noting results in the PR.
 
 ### Documentation
