@@ -5,7 +5,7 @@
 ; Icon: kria.ico
 
 !define PRODUCT_NAME "Kria"
-!define PRODUCT_VERSION "1.3.0"
+!define PRODUCT_VERSION "2.0.0"
 !define PRODUCT_PUBLISHER "Piotriox"
 !define PRODUCT_EXE "kria.exe"
 !define PRODUCT_REGKEY "Software\Kria"
@@ -119,7 +119,7 @@ Section Uninstall
 SectionEnd
 
 ; Description text
-LangString DESC_SecMain ${LANG_ENGLISH} "Install Kria programming language runtime."
+LangString DESC_SecMain ${LANG_ENGLISH} "Install Kria. Source files use the LLVM JIT by default and require Clang from LLVM plus compatible MSVC C++ Build Tools and Windows SDK. The interactive REPL uses the RegisterVM."
 LangString DESC_SecAssoc ${LANG_ENGLISH} "Associate .krx files with Kria so you can run scripts by double-clicking them. (Recommended)"
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN

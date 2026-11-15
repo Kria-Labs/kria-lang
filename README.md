@@ -42,28 +42,28 @@ cargo build --release
 ./target/release/kria examples/13_imports/main.krx
 ```
 
-Files and the REPL use the Register VM by default. Set `KRIA_BACKEND=jit` to
-use the experimental native LLVM-based JIT compiler for source files:
+Source files use the experimental native LLVM-based JIT compiler by default.
+Set `KRIA_BACKEND=register` to use the Register VM instead:
 
 ```bash
-# macOS / Linux (LLVM JIT compiler)
-KRIA_BACKEND=jit ./target/release/kria program.krx
+# macOS / Linux (Register VM)
+KRIA_BACKEND=register ./target/release/kria program.krx
 
 # Windows PowerShell
-$env:KRIA_BACKEND="jit"
+$env:KRIA_BACKEND="register"
 .\target\release\kria.exe program.krx
 ```
 
-The JIT requires `clang` on `PATH`. It compiles generated LLVM IR to a
-platform-native shared library (`.dll`, `.dylib`, or `.so`) and loads it through
-a cross-platform dynamic-library API. Compiled artifacts are cached in the
-operating system's temporary directory, keyed by the generated IR, clang
+The JIT requires Clang (from LLVM) on `PATH`. It compiles generated LLVM IR to
+a platform-native shared library (`.dll`, `.dylib`, or `.so`) and loads it
+through a cross-platform dynamic-library API. Compiled artifacts are cached in
+the operating system's temporary directory, keyed by the generated IR, clang
 version and target, and JIT optimization level.
 
 Remove the environment variable with `unset KRIA_BACKEND` on macOS/Linux or
-`Remove-Item Env:KRIA_BACKEND` in PowerShell to return to the Register VM.
+`Remove-Item Env:KRIA_BACKEND` in PowerShell to return to the default JIT.
 The backend setting applies to source-file execution; the interactive REPL
-always uses the Register VM.
+always uses the Register VM, regardless of `KRIA_BACKEND`.
 
 **REPL:** persistent Register VM session, auto-print for expressions, multi-line blocks, `:help` / `:reset` / `:exit`.
 
@@ -131,10 +131,11 @@ Source (.krx) → Lexer → Parser → SSA/module → Register VM
                                       └→ LLVM JIT (experimental)
 ```
 
-- Register VM is the default for source-file execution from the CLI
+- LLVM JIT is the default for source-file execution from the CLI; set
+  `KRIA_BACKEND=register` to use the Register VM
 - REPL uses the Register VM with persistent globals and functions
 - SSA register instructions, global/local/upvalue storage, call frames, and closures
-- LLVM JIT is experimental and can be selected with `KRIA_BACKEND=jit`
+- LLVM JIT is experimental and requires Clang (from LLVM) on `PATH`
 - Hot-loop optimizations for global and local counters, plus specialized global string appends
 - Monomorphic object-property caches and shared closure environments
 - Implementation: [`src/`](src/) (`lexer`, `parser`, `register`, `vm`, `jit`,
