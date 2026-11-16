@@ -54,12 +54,29 @@ impl Drop for JitArtifacts {
 }
 
 impl CompiledJit {
+    #[cfg(test)]
+    pub(crate) fn run_collect_globals(&self) -> (Result<(), String>, Vec<crate::vm::Value>) {
+        let mut ctx = KriaContext::new(self.globals_count, &self.constants);
+        ctx.set_function_ptrs(self.function_ptrs.clone());
+        (self.entry_fn)(&mut ctx, &RUNTIME_TABLE);
+        let globals = ctx
+            .globals
+            .iter()
+            .map(|value| ctx.to_value(*value))
+            .collect();
+        let result = match ctx.take_error() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        };
+        (result, globals)
+    }
+
     pub fn run(&self) -> Result<(), String> {
         let mut ctx = KriaContext::new(self.globals_count, &self.constants);
         ctx.set_function_ptrs(self.function_ptrs.clone());
         (self.entry_fn)(&mut ctx, &RUNTIME_TABLE);
 
-        if let Some(err) = ctx.error {
+        if let Some(err) = ctx.take_error() {
             return Err(err);
         }
         Ok(())

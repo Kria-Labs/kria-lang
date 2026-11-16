@@ -200,11 +200,11 @@ pub(crate) fn apply_numeric_op(
 ) -> Result<Value, NumericError> {
     match (left, right) {
         (Value::Number(left), Value::Number(right)) => match op {
-            NumericOp::Add => Ok(Value::Number(left + right)),
-            NumericOp::Subtract => Ok(Value::Number(left - right)),
-            NumericOp::Multiply => Ok(Value::Number(left * right)),
+            NumericOp::Add => Ok(Value::Number(left.wrapping_add(*right))),
+            NumericOp::Subtract => Ok(Value::Number(left.wrapping_sub(*right))),
+            NumericOp::Multiply => Ok(Value::Number(left.wrapping_mul(*right))),
             NumericOp::Divide if *right == 0 => Err(NumericError::DivisionByZero),
-            NumericOp::Divide => Ok(Value::Number(left / right)),
+            NumericOp::Divide => Ok(Value::Number(left.wrapping_div(*right))),
             NumericOp::Equals => Ok(Value::Boolean(left == right)),
             NumericOp::NotEquals => Ok(Value::Boolean(left != right)),
             NumericOp::Greater => Ok(Value::Boolean(left > right)),
@@ -234,7 +234,7 @@ fn apply_register_int_op(
         BinaryOperator::Subtract => Ok(Value::Number(left.wrapping_sub(right))),
         BinaryOperator::Multiply => Ok(Value::Number(left.wrapping_mul(right))),
         BinaryOperator::Divide if right == 0 => Err(NumericError::DivisionByZero),
-        BinaryOperator::Divide => Ok(Value::Number(left / right)),
+        BinaryOperator::Divide => Ok(Value::Number(left.wrapping_div(right))),
         BinaryOperator::Equals => Ok(Value::Boolean(left == right)),
         BinaryOperator::NotEquals => Ok(Value::Boolean(left != right)),
         BinaryOperator::GreaterThan => Ok(Value::Boolean(left > right)),
@@ -317,7 +317,29 @@ fn apply_comparison_op(op: NumericOp, ordering: Option<std::cmp::Ordering>) -> V
     Value::Boolean(result)
 }
 
-fn numeric_error_message(op: &str, left: &Value, right: &Value, error: NumericError) -> String {
+pub(crate) fn binary_operator_name(op: BinaryOperator) -> &'static str {
+    match op {
+        BinaryOperator::Add => "Add",
+        BinaryOperator::Subtract => "Subtract",
+        BinaryOperator::Multiply => "Multiply",
+        BinaryOperator::Divide => "Divide",
+        BinaryOperator::Equals => "Equals",
+        BinaryOperator::NotEquals => "NotEquals",
+        BinaryOperator::GreaterThan => "Greater",
+        BinaryOperator::LessThan => "Less",
+        BinaryOperator::GreaterOrEqual => "GreaterEqual",
+        BinaryOperator::LessOrEqual => "LessEqual",
+        BinaryOperator::And => "And",
+        BinaryOperator::Or => "Or",
+    }
+}
+
+pub(crate) fn numeric_error_message(
+    op: &str,
+    left: &Value,
+    right: &Value,
+    error: NumericError,
+) -> String {
     match error {
         NumericError::DivisionByZero => "Division by zero".to_string(),
         NumericError::NotNumeric => {
@@ -736,7 +758,17 @@ fn less_than_const(value: &Value, limit: i64) -> Result<bool, String> {
     }
 }
 
+pub const MAX_CALL_DEPTH: u32 = 1000;
+
+pub fn recursion_limit_message() -> String {
+    format!(
+        "Maximum recursion depth exceeded ({} nested calls)",
+        MAX_CALL_DEPTH
+    )
+}
+
 pub struct RegisterVM {
+    call_depth: u32,
     globals: Vec<Value>,
     frames: Vec<Value>,
     call_args: Vec<Value>,
@@ -746,6 +778,7 @@ pub struct RegisterVM {
 impl RegisterVM {
     pub fn new() -> Self {
         Self {
+            call_depth: 0,
             globals: Vec::new(),
             frames: Vec::new(),
             call_args: Vec::new(),
@@ -783,7 +816,8 @@ impl RegisterVM {
         module: &crate::register::SsaModule,
     ) -> Result<(), String> {
         let empty = Rc::new(RefCell::new(Vec::new()));
-        self.execute_function(&module.entry, 0, &[], &empty, &module.functions)?;
+        self.call_depth = 0;
+        self.execute_function_body(&module.entry, 0, &[], &empty, &module.functions)?;
         Ok(())
     }
 
@@ -815,6 +849,23 @@ impl RegisterVM {
     }
 
     fn execute_function(
+        &mut self,
+        function: &crate::register::SsaFunction,
+        frame_base: usize,
+        args: &[Value],
+        upvalues: &Rc<RefCell<Vec<Value>>>,
+        functions: &[crate::register::SsaFunction],
+    ) -> Result<Option<Value>, String> {
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(recursion_limit_message());
+        }
+        self.call_depth += 1;
+        let result = self.execute_function_body(function, frame_base, args, upvalues, functions);
+        self.call_depth -= 1;
+        result
+    }
+
+    fn execute_function_body(
         &mut self,
         function: &crate::register::SsaFunction,
         frame_base: usize,
@@ -934,10 +985,15 @@ impl RegisterVM {
                             (Value::Number(left), Value::Number(right)) => {
                                 apply_register_int_op(*op, *left, *right)
                             }
-                            _ => Ok(Value::Null),
+                            _ => Err(NumericError::NotNumeric),
                         }
                         .map_err(|error| {
-                            format!("Register VM integer operation failed: {:?}", error)
+                            numeric_error_message(
+                                binary_operator_name(*op),
+                                &self.frames[left_index],
+                                &self.frames[right_index],
+                                error,
+                            )
                         })?;
                         self.frames[dst_index] = result;
                     }
@@ -1005,7 +1061,12 @@ impl RegisterVM {
                                         _ => unreachable!(),
                                     }
                                     .map_err(|error| {
-                                        format!("Register VM integer operation failed: {:?}", error)
+                                        numeric_error_message(
+                                            binary_operator_name(*op),
+                                            &self.frames[left_index],
+                                            &self.frames[right_index],
+                                            error,
+                                        )
                                     })?;
                                 self.frames[dst_index] = result;
                             }
@@ -1029,9 +1090,11 @@ impl RegisterVM {
                                     &self.frames[right_index],
                                 )
                                 .map_err(|error| {
-                                    format!(
-                                        "Register VM numeric operation failed: {:?} for left={:?}, right={:?}",
-                                        error, self.frames[left_index], self.frames[right_index]
+                                    numeric_error_message(
+                                        binary_operator_name(*op),
+                                        &self.frames[left_index],
+                                        &self.frames[right_index],
+                                        error,
                                     )
                                 })?;
                                 self.frames[dst_index] = result;
@@ -1127,7 +1190,9 @@ impl RegisterVM {
                                 self.frames.truncate(caller_end);
                                 result
                             }
-                            _ => None,
+                            _ => {
+                                return Err("Attempted to call non-function value".to_string());
+                            }
                         };
                         self.call_args = call_args;
                         self.frames[frame_base + dst.0 as usize] = result.unwrap_or(Value::Null);
@@ -1421,9 +1486,11 @@ impl RegisterVM {
                         match self.global_mut(*slot as usize) {
                             Value::String(value) => value.append(suffix),
                             other => {
-                                return Err(format!(
-                                    "Add requires two numbers or two strings, found {:?} and {:?}",
-                                    other, suffix
+                                return Err(numeric_error_message(
+                                    "Add",
+                                    other,
+                                    &Value::String(StringValue::from(suffix.as_str())),
+                                    NumericError::NotNumeric,
                                 ));
                             }
                         }

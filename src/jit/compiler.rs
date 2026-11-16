@@ -113,7 +113,7 @@ impl<'a> LlvmCompiler<'a> {
     fn emit_header(&mut self) {
         self.out.push_str(
             r#"            %Value = type { i64, i64 }
-            %Context = type { %Value*, i64, %Value* }
+            %Context = type { %Value*, i64, %Value*, i32, i32 }
 %Runtime = type {
     void (%Context*, %Value)*,
     %Value (%Context*, %Value, i8)*,
@@ -343,7 +343,23 @@ ret_true:
             max_obj_fields
         ));
 
-        s.push_str("  br label %block_0\n\n");
+        if is_entry {
+            s.push_str("  br label %block_0\n\n");
+        } else {
+            s.push_str(&format!(
+                "  %depth_ptr = getelementptr %Context, %Context* %ctx, i32 0, i32 4\n\
+                 \x20 %depth_old = load i32, i32* %depth_ptr\n\
+                 \x20 %depth_new = add i32 %depth_old, 1\n\
+                 \x20 store i32 %depth_new, i32* %depth_ptr\n\
+                 \x20 %depth_over = icmp ugt i32 %depth_new, {}\n\
+                 \x20 br i1 %depth_over, label %kria_depth_exceeded, label %block_0\n\n\
+                 kria_depth_exceeded:\n\
+                 \x20 %depth_flag_ptr = getelementptr %Context, %Context* %ctx, i32 0, i32 3\n\
+                 \x20 store i32 2, i32* %depth_flag_ptr\n\
+                 \x20 ret %Value {{ i64 0, i64 0 }}\n\n",
+                crate::vm::MAX_CALL_DEPTH
+            ));
+        }
 
         let bufs = FuncBuffers {
             max_call_args,
@@ -363,6 +379,17 @@ ret_true:
             s.push('\n');
         }
 
+        if !is_entry {
+            s = self.decrement_depth_on_return(&s);
+        }
+
+        s.push_str("kria_err_exit:\n");
+        if is_entry {
+            s.push_str("  ret void\n");
+        } else {
+            s.push_str("  ret %Value { i64 0, i64 0 }\n");
+        }
+
         s
     }
 
@@ -378,6 +405,86 @@ ret_true:
         let cap_id = if is_entry { "0" } else { "%captures_id" };
 
         for inst in &block.instructions {
+            let start = s.len();
+            self.emit_instruction(func, inst, constant_base, bufs, cap_id, &mut s);
+            if Self::may_set_error(&s[start..]) {
+                s.push_str(&self.emit_error_check());
+            }
+        }
+        s
+    }
+
+    fn may_set_error(ir: &str) -> bool {
+        ir.lines().any(|line| {
+            let line = line.trim();
+            (line.contains("call %Value") || line.contains("call void"))
+                && !line.contains("@kria_is_truthy")
+        })
+    }
+
+    /// `musttail` must be followed directly by `ret`, so tail calls decrement before the call.
+    fn decrement_depth_on_return(&mut self, ir: &str) -> String {
+        let mut out = String::with_capacity(ir.len() + 1024);
+        let mut previous_was_musttail = false;
+        for line in ir.lines() {
+            let trimmed = line.trim_start();
+            let is_musttail = trimmed.contains("musttail call");
+            let is_return = trimmed.starts_with("ret %Value") && !previous_was_musttail;
+            if is_musttail || is_return {
+                let tmp = self.fresh_id();
+                out.push_str(&format!(
+                    "  %dd_ptr_{tmp} = getelementptr %Context, %Context* %ctx, i32 0, i32 4\n\
+                     \x20 %dd_{tmp} = load i32, i32* %dd_ptr_{tmp}\n\
+                     \x20 %dd_new_{tmp} = sub i32 %dd_{tmp}, 1\n\
+                     \x20 store i32 %dd_new_{tmp}, i32* %dd_ptr_{tmp}\n"
+                ));
+            }
+            out.push_str(line);
+            out.push('\n');
+            previous_was_musttail = is_musttail;
+        }
+        out
+    }
+
+    fn emit_sdiv_guard(
+        left: &str,
+        right: &str,
+        prefix: &str,
+        unsafe_label: &str,
+        safe_label: &str,
+    ) -> String {
+        format!(
+            "  %{prefix}_zero = icmp eq i64 {right}, 0\n\
+             \x20 %{prefix}_min = icmp eq i64 {left}, -9223372036854775808\n\
+             \x20 %{prefix}_neg1 = icmp eq i64 {right}, -1\n\
+             \x20 %{prefix}_ovf = and i1 %{prefix}_min, %{prefix}_neg1\n\
+             \x20 %{prefix}_bad = or i1 %{prefix}_zero, %{prefix}_ovf\n\
+             \x20 br i1 %{prefix}_bad, label %{unsafe_label}, label %{safe_label}\n"
+        )
+    }
+
+    fn emit_error_check(&mut self) -> String {
+        let tmp = self.fresh_id();
+        format!(
+            "  %ef_ptr_{tmp} = getelementptr %Context, %Context* %ctx, i32 0, i32 3\n\
+             \x20 %ef_{tmp} = load i32, i32* %ef_ptr_{tmp}\n\
+             \x20 %ef_set_{tmp} = icmp ne i32 %ef_{tmp}, 0\n\
+             \x20 br i1 %ef_set_{tmp}, label %kria_err_exit, label %ef_ok_{tmp}\n\
+             ef_ok_{tmp}:\n"
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_instruction(
+        &mut self,
+        func: &SsaFunction,
+        inst: &SsaInstruction,
+        constant_base: usize,
+        bufs: &FuncBuffers,
+        cap_id: &str,
+        s: &mut String,
+    ) {
+        {
             match inst {
                 SsaInstruction::Const { dst, idx } => {
                     let constant = func.constants.get(*idx as usize);
@@ -583,11 +690,36 @@ ret_true:
                             ));
                         }
                         BinaryOperator::Divide => {
+                            // `sdiv` is UB for x / 0 and MIN / -1; the runtime handles those.
+                            s.push_str(&Self::emit_sdiv_guard(
+                                &format!("%bi_lnum_{tmp}"),
+                                &format!("%bi_rnum_{tmp}"),
+                                &format!("bi_d_{tmp}"),
+                                &format!("bi_dslow_{tmp}"),
+                                &format!("bi_dok_{tmp}"),
+                            ));
+                            s.push_str(&format!("bi_dok_{tmp}:\n"));
                             s.push_str(&format!(
                                 "  %bi_res_{tmp} = sdiv i64 %bi_lnum_{tmp}, %bi_rnum_{tmp}\n"
                             ));
                             s.push_str(&format!(
-                                "  %bi_val_{tmp} = insertvalue %Value {{ i64 1, i64 0 }}, i64 %bi_res_{tmp}, 1\n"
+                                "  %bi_okval_{tmp} = insertvalue %Value {{ i64 1, i64 0 }}, i64 %bi_res_{tmp}, 1\n"
+                            ));
+                            s.push_str(&format!("  br label %bi_dcont_{tmp}\n"));
+                            s.push_str(&format!("bi_dslow_{tmp}:\n"));
+                            s.push_str(&format!(
+                                "  %bi_dfn_ptr_{tmp} = getelementptr %Runtime, %Runtime* %rt, i32 0, i32 2\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %bi_dfn_{tmp} = load %Value (%Context*, i32, %Value, %Value)*, %Value (%Context*, i32, %Value, %Value)** %bi_dfn_ptr_{tmp}\n"
+                            ));
+                            s.push_str(&format!(
+                                "  %bi_dres_{tmp} = call %Value %bi_dfn_{tmp}(%Context* %ctx, i32 3, %Value %bi_l_{tmp}, %Value %bi_r_{tmp})\n"
+                            ));
+                            s.push_str(&format!("  br label %bi_dcont_{tmp}\n"));
+                            s.push_str(&format!("bi_dcont_{tmp}:\n"));
+                            s.push_str(&format!(
+                                "  %bi_val_{tmp} = phi %Value [ %bi_okval_{tmp}, %bi_dok_{tmp} ], [ %bi_dres_{tmp}, %bi_dslow_{tmp} ]\n"
                             ));
                         }
                         BinaryOperator::Equals => {
@@ -803,6 +935,14 @@ ret_true:
                                 ));
                             }
                             BinaryOperator::Divide => {
+                                s.push_str(&Self::emit_sdiv_guard(
+                                    &format!("%b_fl_{tmp}"),
+                                    &format!("%b_fr_{tmp}"),
+                                    &format!("b_d_{tmp}"),
+                                    &format!("b_slow_{tmp}"),
+                                    &format!("b_dok_{tmp}"),
+                                ));
+                                s.push_str(&format!("b_dok_{tmp}:\n"));
                                 s.push_str(&format!(
                                     "  %b_fres_{tmp} = sdiv i64 %b_fl_{tmp}, %b_fr_{tmp}\n"
                                 ));
@@ -1783,8 +1923,6 @@ ret_true:
                 }
             }
         }
-
-        s
     }
 
     fn emit_block_terminator(

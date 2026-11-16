@@ -1,7 +1,8 @@
 use super::value::{LlvmValue, TAG_BOOL, TAG_FLOAT, TAG_HEAP, TAG_INT, TAG_NULL};
 use crate::ast::BinaryOperator;
 use crate::vm::{
-    apply_numeric_op, new_object, ArrayData, ArrayElements, NumericOp, StringValue, Value,
+    apply_numeric_op, binary_operator_name, new_object, numeric_error_message, ArrayData,
+    ArrayElements, NumericError, NumericOp, StringValue, Value,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -68,6 +69,9 @@ pub struct KriaContext {
     pub globals_ptr: *mut LlvmValue,
     pub globals_len: usize,
     pub constants_ptr: *const LlvmValue,
+    // Fields 3 and 4 of `%Context` in generated code; keep the order in sync.
+    pub error_flag: u32,
+    pub call_depth: u32,
     pub globals: Vec<LlvmValue>,
     pub heap_objects: Vec<Value>,
     heap_identities: HashMap<HeapIdentity, usize>,
@@ -86,6 +90,8 @@ impl KriaContext {
             globals_ptr: std::ptr::null_mut(),
             globals_len: num_globals,
             constants_ptr: std::ptr::null(),
+            error_flag: 0,
+            call_depth: 0,
             globals,
             heap_objects: Vec::new(),
             heap_identities: HashMap::new(),
@@ -173,10 +179,20 @@ impl KriaContext {
         }
     }
 
+    /// The recursion limit sets `error_flag` without a message.
+    pub fn take_error(&mut self) -> Option<String> {
+        match self.error.take() {
+            Some(error) => Some(error),
+            None if self.error_flag != 0 => Some(crate::vm::recursion_limit_message()),
+            None => None,
+        }
+    }
+
     pub fn set_error(&mut self, msg: String) {
         if self.error.is_none() {
             self.error = Some(msg);
         }
+        self.error_flag = 1;
     }
 }
 
@@ -320,7 +336,7 @@ extern "C" fn rt_binop(
                 match apply_numeric_op(num_op, &left_val, &right_val) {
                     Ok(v) => ctx.from_value(v),
                     Err(e) => {
-                        ctx.set_error(format!("Add failed: {:?}", e));
+                        ctx.set_error(numeric_error_message("Add", &left_val, &right_val, e));
                         LlvmValue::NULL
                     }
                 }
@@ -340,7 +356,12 @@ extern "C" fn rt_binop(
             match apply_numeric_op(num_op, &left_val, &right_val) {
                 Ok(v) => ctx.from_value(v),
                 Err(e) => {
-                    ctx.set_error(format!("Operation failed: {:?}", e));
+                    ctx.set_error(numeric_error_message(
+                        binary_operator_name(op),
+                        &left_val,
+                        &right_val,
+                        e,
+                    ));
                     LlvmValue::NULL
                 }
             }
@@ -712,7 +733,13 @@ extern "C" fn rt_append_str_global(
                 }
             }
         }
-        ctx.set_error("Append requires string global".to_string());
+        let current = ctx.to_value(ctx.globals[slot]);
+        ctx.set_error(numeric_error_message(
+            "Add",
+            &current,
+            &Value::String(StringValue::from(suffix)),
+            NumericError::NotNumeric,
+        ));
     }
 }
 
@@ -783,7 +810,7 @@ extern "C" fn rt_call_closure(
             LlvmValue::NULL
         }
     } else {
-        ctx.set_error("Called non-function".to_string());
+        ctx.set_error("Attempted to call non-function value".to_string());
         LlvmValue::NULL
     }
 }

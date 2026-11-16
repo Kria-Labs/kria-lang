@@ -280,17 +280,41 @@ pub struct ModuleContext {
     pub next_function: u32,
     pub function_globals: HashMap<String, u32>,
     pub inline_functions: HashMap<String, (Vec<String>, Vec<Statement>)>,
+    /// Redefined or reassigned functions: never inlined or bound statically.
+    pub inline_blocked: HashSet<String>,
+    pub module_prefix: String,
 }
 
 impl ModuleContext {
+    /// `::` can't appear in identifiers, so prefixed keys never clash with user names.
+    pub fn qualify(&self, name: &str) -> String {
+        if self.module_prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}{}", self.module_prefix, name)
+        }
+    }
+
     pub fn resolve_global(&mut self, name: &str) -> u32 {
-        if let Some(slot) = self.globals.get(name) {
+        let key = self.qualify(name);
+        if let Some(slot) = self.globals.get(&key) {
             return *slot;
         }
         let slot = self.globals.len() as u32;
-        self.globals.insert(name.to_string(), slot);
+        self.globals.insert(key, slot);
         slot
     }
+
+    pub fn lookup_global(&self, name: &str) -> Option<u32> {
+        self.globals.get(&self.qualify(name)).copied()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleUnit {
+    pub name: String,
+    pub imports: Vec<(String, usize)>,
+    pub statements: Vec<Statement>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,6 +390,63 @@ fn optimize_ssa_function(function: &mut SsaFunction) {
     }
 }
 
+fn collect_function_bindings(
+    statements: &[Statement],
+    definitions: &mut HashMap<String, usize>,
+    rebound: &mut HashSet<String>,
+) {
+    for statement in statements {
+        match statement {
+            Statement::FunctionDef { name, body, .. } => {
+                *definitions.entry(name.clone()).or_insert(0) += 1;
+                collect_function_bindings(body, definitions, rebound);
+            }
+            Statement::Assignment { name, .. } => {
+                rebound.insert(name.clone());
+            }
+            Statement::If {
+                branches,
+                else_branch,
+            } => {
+                for (_, body) in branches {
+                    collect_function_bindings(body, definitions, rebound);
+                }
+                if let Some(body) = else_branch {
+                    collect_function_bindings(body, definitions, rebound);
+                }
+            }
+            Statement::While { body, .. } => {
+                collect_function_bindings(body, definitions, rebound);
+            }
+            Statement::ForIn {
+                key_name,
+                value_name,
+                body,
+                ..
+            } => {
+                rebound.insert(key_name.clone());
+                if let Some(value_name) = value_name {
+                    rebound.insert(value_name.clone());
+                }
+                collect_function_bindings(body, definitions, rebound);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Unlike `Value::eq`, never treats `7` and `7.0` as the same constant.
+fn constants_identical(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x.to_bits() == y.to_bits(),
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Boolean(x), Value::Boolean(y)) => x == y,
+        (Value::Null, Value::Null) => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct FunctionLowerer {
     module: ModuleLowerer,
@@ -388,10 +469,9 @@ impl ModuleLowerer {
     }
 
     pub fn bind_import(&mut self, alias: &str, exports: HashMap<String, u32>) {
-        self.context
-            .borrow_mut()
-            .imports
-            .insert(alias.to_string(), exports);
+        let mut ctx = self.context.borrow_mut();
+        let key = ctx.qualify(alias);
+        ctx.imports.insert(key, exports);
     }
 
     pub fn resolve_global(&mut self, name: &str) -> u32 {
@@ -399,6 +479,76 @@ impl ModuleLowerer {
     }
 
     pub fn lower_module(&mut self, statements: &[Statement]) -> Result<SsaModule, String> {
+        self.lower_units(&[], statements)
+    }
+
+    pub fn lower_program(&mut self, units: &[ModuleUnit]) -> Result<SsaModule, String> {
+        let Some((entry, dependencies)) = units.split_last() else {
+            return self.lower_module(&[]);
+        };
+        if entry
+            .imports
+            .iter()
+            .any(|(_, dep)| *dep >= dependencies.len())
+        {
+            return Err("Internal error: import refers to a later module".to_string());
+        }
+        self.lower_units(units, &entry.statements)
+    }
+
+    fn register_function_bindings(&mut self, statements: &[Statement]) {
+        let mut definitions = HashMap::new();
+        let mut rebound = HashSet::new();
+        collect_function_bindings(statements, &mut definitions, &mut rebound);
+        let mut ctx = self.context.borrow_mut();
+        for (name, count) in definitions {
+            if count > 1 {
+                let key = ctx.qualify(&name);
+                ctx.inline_blocked.insert(key);
+            }
+        }
+        for name in rebound {
+            let key = ctx.qualify(&name);
+            ctx.inline_blocked.insert(key);
+        }
+    }
+
+    fn enter_unit(
+        &mut self,
+        unit: &ModuleUnit,
+        prefix: String,
+        exports_by_unit: &[HashMap<String, u32>],
+    ) -> Result<HashMap<String, u32>, String> {
+        self.context.borrow_mut().module_prefix = prefix;
+        for (alias, dep) in &unit.imports {
+            let exports = exports_by_unit.get(*dep).ok_or_else(|| {
+                format!(
+                    "Internal error: module '{}' imported before it was compiled",
+                    alias
+                )
+            })?;
+            self.bind_import(alias, exports.clone());
+        }
+        let mut exports = HashMap::new();
+        for statement in &unit.statements {
+            if let Statement::FunctionDef {
+                name,
+                exported: true,
+                ..
+            } = statement
+            {
+                exports.insert(name.clone(), self.resolve_global(name));
+            }
+        }
+        self.register_function_bindings(&unit.statements);
+        Ok(exports)
+    }
+
+    fn lower_units(
+        &mut self,
+        units: &[ModuleUnit],
+        single: &[Statement],
+    ) -> Result<SsaModule, String> {
         self.scope_stack.borrow_mut().push(ScopeFrame {
             locals: HashMap::new(),
             next_local: 0,
@@ -407,7 +557,39 @@ impl ModuleLowerer {
             is_module: true,
         });
         let mut function = FunctionLowerer::new_module(self.clone());
-        function.lower_statements(statements)?;
+        let lowered = if units.is_empty() {
+            self.register_function_bindings(single);
+            function.lower_statements(single)
+        } else {
+            let mut exports_by_unit: Vec<HashMap<String, u32>> = Vec::new();
+            let last = units.len() - 1;
+            let mut result = Ok(());
+            for (index, unit) in units.iter().enumerate() {
+                let prefix = if index == last {
+                    String::new()
+                } else {
+                    format!("{}:{}::", index, unit.name)
+                };
+                let exports = match self.enter_unit(unit, prefix, &exports_by_unit) {
+                    Ok(exports) => exports,
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                };
+                exports_by_unit.push(exports);
+                if let Err(error) = function.lower_statements(&unit.statements) {
+                    result = Err(error);
+                    break;
+                }
+            }
+            self.context.borrow_mut().module_prefix = String::new();
+            result
+        };
+        if let Err(error) = lowered {
+            self.scope_stack.borrow_mut().pop();
+            return Err(error);
+        }
         let mut entry = function.finish_function();
         self.scope_stack.borrow_mut().pop();
 
@@ -561,7 +743,11 @@ impl FunctionLowerer {
     }
 
     fn add_constant(&mut self, value: Value) -> u32 {
-        let index = if let Some(index) = self.constants.iter().position(|item| item == &value) {
+        let index = if let Some(index) = self
+            .constants
+            .iter()
+            .position(|item| constants_identical(item, &value))
+        {
             index
         } else {
             let index = self.constants.len();
@@ -584,6 +770,11 @@ impl FunctionLowerer {
     fn lower_statement(&mut self, statement: &Statement) -> Result<(), String> {
         match statement {
             Statement::Assignment { name, value } => {
+                {
+                    let mut ctx = self.module.context.borrow_mut();
+                    let key = ctx.qualify(name);
+                    ctx.inline_blocked.insert(key);
+                }
                 if self.try_special_assignment(name, value)? {
                     return Ok(());
                 }
@@ -629,13 +820,12 @@ impl FunctionLowerer {
             Statement::Return(expression) => {
                 if let Some(Expression::Call { callee, args }) = expression.as_ref() {
                     if let Expression::Identifier(name) = callee.as_ref() {
-                        let function_index = self
-                            .module
-                            .context
-                            .borrow()
-                            .function_globals
-                            .get(name)
-                            .copied();
+                        let function_index =
+                            if matches!(self.lookup_variable(name), Some(Variable::Global(_))) {
+                                self.static_function_index(name)
+                            } else {
+                                None
+                            };
                         if let Some(function_index) = function_index {
                             let mut values = Vec::with_capacity(args.len());
                             for arg in args {
@@ -719,14 +909,11 @@ impl FunctionLowerer {
                 self.lower_function(name, params, body, *exported)?;
             }
             Statement::Import { alias, .. } => {
-                let exports = self
-                    .module
-                    .context
-                    .borrow()
-                    .imports
-                    .get(alias)
-                    .cloned()
-                    .unwrap_or_default();
+                let exports = {
+                    let ctx = self.module.context.borrow();
+                    ctx.imports.get(&ctx.qualify(alias)).cloned()
+                }
+                .unwrap_or_default();
                 let mut fields = Vec::new();
                 for (export_name, slot) in exports {
                     let value = self.fresh_value();
@@ -802,9 +989,7 @@ impl FunctionLowerer {
                 .module
                 .context
                 .borrow()
-                .globals
-                .get(name)
-                .copied()
+                .lookup_global(name)
                 .map(Variable::Global);
         }
         let current = stack.len() - 1;
@@ -819,9 +1004,7 @@ impl FunctionLowerer {
                 .module
                 .context
                 .borrow()
-                .globals
-                .get(name)
-                .copied()
+                .lookup_global(name)
                 .map(Variable::Global);
         }
         for frame in stack[..current].iter().rev() {
@@ -835,9 +1018,7 @@ impl FunctionLowerer {
         self.module
             .context
             .borrow()
-            .globals
-            .get(name)
-            .copied()
+            .lookup_global(name)
             .map(Variable::Global)
     }
 
@@ -879,9 +1060,16 @@ impl FunctionLowerer {
         name: &str,
         args: &[Expression],
     ) -> Result<Option<ValueId>, String> {
+        if !matches!(self.lookup_variable(name), Some(Variable::Global(_))) {
+            return Ok(None);
+        }
         let inline = {
             let ctx = self.module.context.borrow();
-            ctx.inline_functions.get(name).cloned()
+            let key = ctx.qualify(name);
+            if ctx.inline_blocked.contains(&key) {
+                return Ok(None);
+            }
+            ctx.inline_functions.get(&key).cloned()
         };
         let Some((params, body)) = inline else {
             return Ok(None);
@@ -892,11 +1080,61 @@ impl FunctionLowerer {
         let Some(Statement::Return(Some(return_expression))) = body.first() else {
             return Ok(None);
         };
-        if matches!(return_expression, Expression::Call { .. }) {
+        // The body is lowered in the caller's scope, so it may only use its parameters.
+        if !Self::inlinable_body(return_expression, &params) {
+            return Ok(None);
+        }
+        // Arguments are substituted textually, so they must be side-effect free.
+        if !args.iter().all(Self::is_trivial_argument) {
             return Ok(None);
         }
         let substituted = Self::substitute_expression(return_expression, &params, args);
         Ok(Some(self.lower_expression(&substituted)?))
+    }
+
+    fn static_function_index(&self, name: &str) -> Option<u32> {
+        let ctx = self.module.context.borrow();
+        let key = ctx.qualify(name);
+        if ctx.inline_blocked.contains(&key) {
+            return None;
+        }
+        ctx.function_globals.get(&key).copied()
+    }
+
+    fn inlinable_body(expression: &Expression, params: &[String]) -> bool {
+        match expression {
+            Expression::Literal(
+                Literal::Number(_)
+                | Literal::Float(_)
+                | Literal::String(_)
+                | Literal::Boolean(_)
+                | Literal::Null,
+            ) => true,
+            Expression::Identifier(name) => params.iter().any(|param| param == name),
+            Expression::BinaryOp { left, right, .. } => {
+                Self::inlinable_body(left, params) && Self::inlinable_body(right, params)
+            }
+            Expression::UnaryOp { expr, .. } => Self::inlinable_body(expr, params),
+            Expression::MemberAccess { object, .. } => Self::inlinable_body(object, params),
+            Expression::Index { object, index } => {
+                Self::inlinable_body(object, params) && Self::inlinable_body(index, params)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_trivial_argument(expression: &Expression) -> bool {
+        matches!(
+            expression,
+            Expression::Identifier(_)
+                | Expression::Literal(
+                    Literal::Number(_)
+                        | Literal::Float(_)
+                        | Literal::String(_)
+                        | Literal::Boolean(_)
+                        | Literal::Null
+                )
+        )
     }
 
     fn less_const_ident(condition: &Expression) -> Option<(&str, i64)> {
@@ -1568,13 +1806,17 @@ impl FunctionLowerer {
             }
             ctx.module_functions[function_index as usize] = ssa_function;
             if self.is_module {
-                ctx.function_globals
-                    .insert(name.to_string(), function_index);
+                let key = ctx.qualify(name);
+                if ctx.function_globals.contains_key(&key) {
+                    ctx.inline_blocked.insert(key.clone());
+                }
+                ctx.function_globals.insert(key, function_index);
             }
             if self.is_module && body.len() == 1 {
                 if let Statement::Return(Some(_)) = &body[0] {
+                    let key = ctx.qualify(name);
                     ctx.inline_functions
-                        .insert(name.to_string(), (params.to_vec(), body.to_vec()));
+                        .insert(key, (params.to_vec(), body.to_vec()));
                 }
             }
         }
@@ -1784,12 +2026,7 @@ impl FunctionLowerer {
                 }
                 let dst = self.fresh_value();
                 let function_index = if let Variable::Global(_) = callee_var {
-                    self.module
-                        .context
-                        .borrow()
-                        .function_globals
-                        .get(name)
-                        .copied()
+                    self.static_function_index(name)
                 } else {
                     None
                 };
@@ -2065,5 +2302,139 @@ mod tests {
             "n",
         );
         assert!(matches!(value, Value::Number(2)));
+    }
+
+    #[test]
+    fn float_literal_is_not_merged_with_equal_integer_constant() {
+        let value = global_value("set a = 7 / 2\nset b = 7.0 / 2\n", "b");
+        assert!(matches!(value, Value::Float(f) if f == 3.5));
+    }
+
+    #[test]
+    fn integer_literal_is_not_merged_with_equal_float_constant() {
+        let value = global_value("set a = 1.0\nset b = 1 == 1\n", "b");
+        assert!(matches!(value, Value::Boolean(true)));
+        let zero = global_value("set a = 0\nset b = 0.0\n", "b");
+        assert!(matches!(zero, Value::Float(_)));
+    }
+
+    #[test]
+    fn inlined_function_reads_global_not_caller_local() {
+        let value = global_value(
+            "set factor = 10\nfn scale(x) { return x * factor }\nfn g() {\nset factor = 2\nreturn scale(5)\n}\nset r = g()\n",
+            "r",
+        );
+        assert!(matches!(value, Value::Number(50)));
+    }
+
+    #[test]
+    fn inlined_function_evaluates_side_effecting_argument_once() {
+        let source = "set c = 0\nfn tick() {\nset c = c + 1\nreturn c\n}\nfn sq(n) { return n * n }\nset r = sq(tick())\n";
+        assert!(matches!(global_value(source, "r"), Value::Number(1)));
+        assert!(matches!(global_value(source, "c"), Value::Number(1)));
+    }
+
+    #[test]
+    fn parameter_shadowing_a_global_function_is_called() {
+        let value = global_value(
+            "fn sq(n) { return n * n }\nfn apply(sq, x) { return sq(x) }\nset r = apply(fn(v) { return v + 1 }, 5)\n",
+            "r",
+        );
+        assert!(matches!(value, Value::Number(6)));
+    }
+
+    #[test]
+    fn nested_call_arguments_use_callee_parameters() {
+        let value = global_value(
+            "fn g(x) { return x * 100 }\nfn f(x) { return g(x) + 1 }\nfn caller() {\nset x = 7\nreturn f(2)\n}\nset r = caller()\n",
+            "r",
+        );
+        assert!(matches!(value, Value::Number(201)));
+    }
+
+    #[test]
+    fn redefined_function_is_not_inlined() {
+        let value = global_value(
+            "fn h(x) { return x + 1 }\nfn call_h() { return h(1) }\nfn h(x) { return x + 100 }\nset r = call_h()\n",
+            "r",
+        );
+        assert!(matches!(value, Value::Number(101)));
+    }
+
+    fn vm_error(source: &str) -> String {
+        let statements = Parser::new(Lexer::new(source).tokenize()).parse().unwrap();
+        let module = ModuleLowerer::new().lower_module(&statements).unwrap();
+        RegisterVM::new().execute(&module).unwrap_err()
+    }
+
+    #[test]
+    fn calling_non_function_is_an_error() {
+        assert_eq!(
+            vm_error("set x = 5\nx(1)\n"),
+            "Attempted to call non-function value"
+        );
+        assert_eq!(
+            vm_error("set r = undefined_function(1)\n"),
+            "Attempted to call non-function value"
+        );
+    }
+
+    #[test]
+    fn integer_division_by_zero_is_an_error() {
+        assert_eq!(vm_error("set q = 1 / 0\n"), "Division by zero");
+        assert_eq!(vm_error("set z = 0\nset q = 10 / z\n"), "Division by zero");
+    }
+
+    #[test]
+    fn min_divided_by_minus_one_wraps_instead_of_panicking() {
+        let value = global_value(
+            "set m = -9223372036854775807 - 1\nset n = -1\nset q = m / n\n",
+            "q",
+        );
+        assert!(matches!(value, Value::Number(i64::MIN)));
+        let literal = global_value("set q = (-9223372036854775807 - 1) / -1\n", "q");
+        assert!(matches!(literal, Value::Number(i64::MIN)));
+    }
+
+    fn with_large_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn recursion_up_to_the_limit_succeeds() {
+        let depth = crate::vm::MAX_CALL_DEPTH - 1;
+        let ok = with_large_stack(move || {
+            let source = format!(
+                "fn f(n) {{\nif (n == 0) {{ return 0 }}\nreturn 1 + f(n - 1)\n}}\nset r = f({})\n",
+                depth
+            );
+            matches!(global_value(&source, "r"), Value::Number(n) if n == depth as i64)
+        });
+        assert!(ok);
+    }
+
+    #[test]
+    fn recursion_past_the_limit_is_a_runtime_error() {
+        let error = with_large_stack(|| {
+            vm_error(
+                "fn f(n) {\nif (n == 0) { return 0 }\nreturn 1 + f(n - 1)\n}\nset r = f(100000)\n",
+            )
+        });
+        assert_eq!(error, crate::vm::recursion_limit_message());
+    }
+
+    #[test]
+    fn call_depth_is_released_after_returning() {
+        let ok = with_large_stack(|| {
+            let source = "fn f(n) {\nif (n == 0) { return 0 }\nreturn 1 + f(n - 1)\n}\n\
+                          set i = 0\nset total = 0\nwhile (i < 20) {\nset total = total + f(900)\nset i = i + 1\n}\n";
+            matches!(global_value(source, "total"), Value::Number(18000))
+        });
+        assert!(ok);
     }
 }

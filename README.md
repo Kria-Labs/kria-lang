@@ -100,7 +100,10 @@ import math from "./math.krx"
 print(math.add(2, 3))
 ```
 
-- `export fn` — visible to importers; other functions stay private
+- `export fn` — visible to importers, only through the import alias (`math.add`)
+- Each file has its own namespace: top-level variables and non-exported
+  functions are private to the file, so names never clash between modules
+- A module imported from several files is loaded and run once
 - Relative paths only (`./`, `../`); circular imports are rejected
 - Package manager (KPM) is planned later
 

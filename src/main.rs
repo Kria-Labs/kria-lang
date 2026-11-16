@@ -44,15 +44,33 @@ fn run_file(filename: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Windows' 1 MB main-thread stack can't hold MAX_CALL_DEPTH VM frames.
+const INTERPRETER_STACK_SIZE: usize = 64 * 1024 * 1024;
+
 fn main() {
+    let interpreter = std::thread::Builder::new()
+        .name("kria".to_string())
+        .stack_size(INTERPRETER_STACK_SIZE)
+        .spawn(run_cli)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to start Kria: {}", e);
+            process::exit(1);
+        });
+    let code = interpreter.join().unwrap_or(1);
+    if code != 0 {
+        process::exit(code);
+    }
+}
+
+fn run_cli() -> i32 {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
         if let Err(e) = kria::repl::run() {
             eprintln!("REPL error: {}", e);
-            process::exit(1);
+            return 1;
         }
-        return;
+        return 0;
     }
 
     match args[1].as_str() {
@@ -65,8 +83,9 @@ fn main() {
         path => {
             if let Err(e) = run_file(path) {
                 eprintln!("{}", e);
-                process::exit(1);
+                return 1;
             }
         }
     }
+    0
 }

@@ -211,3 +211,103 @@ fn test_jit_runs_test_krx() {
     let mut jit = LlvmJit::new();
     jit.execute(&ssa).unwrap();
 }
+
+fn run_jit_globals(source: &str) -> (Result<(), String>, impl Fn(&str) -> crate::vm::Value) {
+    let ssa = compile_to_ssa(source);
+    let compiled = LlvmJit::new().compile(&ssa).unwrap();
+    let (result, globals) = compiled.run_collect_globals();
+    let slots = ssa.globals.clone();
+    let lookup = move |name: &str| {
+        slots
+            .get(name)
+            .and_then(|slot| globals.get(*slot as usize).cloned())
+            .unwrap_or(crate::vm::Value::Null)
+    };
+    (result, lookup)
+}
+
+#[test]
+fn test_jit_division_by_zero_stops_execution() {
+    let (result, global) =
+        run_jit_globals("set before = 1\nset z = 0\nset q = 10 / z\nset after = 1\n");
+    assert_eq!(result, Err("Division by zero".to_string()));
+    assert!(matches!(global("before"), crate::vm::Value::Number(1)));
+    assert!(matches!(global("after"), crate::vm::Value::Null));
+}
+
+#[test]
+fn test_jit_literal_division_by_zero_is_reported() {
+    let (result, global) = run_jit_globals("set q = 1 / 0\nset after = 1\n");
+    assert_eq!(result, Err("Division by zero".to_string()));
+    assert!(matches!(global("after"), crate::vm::Value::Null));
+}
+
+#[test]
+fn test_jit_min_divided_by_minus_one_wraps_like_the_vm() {
+    let (result, global) =
+        run_jit_globals("set m = -9223372036854775807 - 1\nset n = -1\nset q = m / n\n");
+    assert_eq!(result, Ok(()));
+    assert!(matches!(global("q"), crate::vm::Value::Number(i64::MIN)));
+}
+
+#[test]
+fn test_jit_error_in_callee_stops_caller() {
+    let (result, global) = run_jit_globals(
+        "set progress = 0\n\
+         fn inner(x) {\nset q = 10 / x\nreturn q\n}\n\
+         fn outer(x) {\nset r = inner(x)\nset progress = 99\nreturn r\n}\n\
+         set r = outer(0)\nset after = 1\n",
+    );
+    assert_eq!(result, Err("Division by zero".to_string()));
+    assert!(matches!(global("progress"), crate::vm::Value::Number(0)));
+    assert!(matches!(global("after"), crate::vm::Value::Null));
+}
+
+#[test]
+fn test_jit_type_error_stops_loop() {
+    let (result, global) = run_jit_globals(
+        "set i = 0\nwhile (i < 100) {\nset i = i + 1\nif (i == 3) {\nset bad = i + null\n}\n}\nset after = 1\n",
+    );
+    assert_eq!(
+        result,
+        Err("Add requires two numbers or two strings, found Number(3) and Null".to_string())
+    );
+    assert!(matches!(global("after"), crate::vm::Value::Null));
+}
+
+#[test]
+fn test_jit_calling_non_function_stops_execution() {
+    let (result, global) = run_jit_globals("set x = 5\nx(1)\nset after = 1\n");
+    assert_eq!(
+        result,
+        Err("Attempted to call non-function value".to_string())
+    );
+    assert!(matches!(global("after"), crate::vm::Value::Null));
+}
+
+#[test]
+fn test_jit_recursion_limit_matches_the_vm() {
+    let depth = crate::vm::MAX_CALL_DEPTH - 1;
+    let (result, global) = run_jit_globals(&format!(
+        "fn f(n) {{\nif (n == 0) {{ return 0 }}\nreturn 1 + f(n - 1)\n}}\nset r = f({})\n",
+        depth
+    ));
+    assert_eq!(result, Ok(()));
+    assert!(matches!(global("r"), crate::vm::Value::Number(n) if n == depth as i64));
+
+    let (result, global) = run_jit_globals(
+        "fn f(n) {\nif (n == 0) { return 0 }\nreturn 1 + f(n - 1)\n}\nset r = f(100000)\nset after = 1\n",
+    );
+    assert_eq!(result, Err(crate::vm::recursion_limit_message()));
+    assert!(matches!(global("after"), crate::vm::Value::Null));
+}
+
+#[test]
+fn test_jit_call_depth_is_released_after_returning() {
+    let (result, global) = run_jit_globals(
+        "fn f(n) {\nif (n == 0) { return 0 }\nreturn 1 + f(n - 1)\n}\n\
+         set i = 0\nset total = 0\nwhile (i < 20) {\nset total = total + f(900)\nset i = i + 1\n}\n",
+    );
+    assert_eq!(result, Ok(()));
+    assert!(matches!(global("total"), crate::vm::Value::Number(18000)));
+}
