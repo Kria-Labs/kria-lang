@@ -5,7 +5,8 @@ Thank you for your interest in Kria. This document explains how to get set up, m
 ## Getting started
 
 1. **Fork** the repository and clone your fork.
-2. Install a recent **stable Rust** toolchain ([rustup](https://rustup.rs/)).
+2. Install a recent **stable Rust** toolchain ([rustup](https://rustup.rs/))
+   and the native toolchain for your platform (see below).
 3. Build and run tests:
 
 ```bash
@@ -26,6 +27,27 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 4. Explore [`examples/`](examples/) to see language features in context.
+
+### Platform toolchains
+
+Contributors need the same native toolchain as JIT users (see
+[Platform requirements](README.md#platform-requirements) in the README):
+Rust uses it to link Kria, and `cargo test` runs the JIT tests in
+`src/jit/tests.rs`, which call `clang` to compile and load native code.
+
+| Platform | Install |
+|----------|---------|
+| **Windows** | [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **Desktop development with C++** workload (MSVC v14x + Windows SDK), required by Rust's default `x86_64-pc-windows-msvc` target and by the JIT linker. Plus [LLVM for Windows](https://github.com/llvm/llvm-project/releases) with `clang` on `PATH`. |
+| **Linux** | `clang` and the usual build tools: `sudo apt install build-essential clang` (Debian/Ubuntu), `sudo dnf install gcc clang` (Fedora), `sudo pacman -S base-devel clang` (Arch). |
+| **macOS** | Xcode Command Line Tools: `xcode-select --install` (provides `clang`, the linker, and the SDK). |
+
+Verify with `clang --version` and `cargo --version`. Without `clang`, the
+build still succeeds and the Register VM tests pass, but the JIT tests fail.
+Run the Register VM manually with `KRIA_BACKEND=register`.
+
+If you change how the JIT invokes `clang` or links native code, update the
+README's platform requirements and the description in
+`release/kria-setup.nsi` to match.
 
 ## Project layout
 

@@ -23,7 +23,9 @@
 
 ## Quick start
 
-**Requirements:** [Rust](https://rustup.rs/) (2021 edition)
+**Requirements:** [Rust](https://rustup.rs/) (2021 edition) to build. Running
+source files with the default JIT also needs a native toolchain — see
+[Platform requirements](#platform-requirements).
 
 ```bash
 git clone <repo-url> && cd kria-lang
@@ -54,16 +56,43 @@ $env:KRIA_BACKEND="register"
 .\target\release\kria.exe program.krx
 ```
 
-The JIT requires Clang (from LLVM) on `PATH`. It compiles generated LLVM IR to
-a platform-native shared library (`.dll`, `.dylib`, or `.so`) and loads it
-through a cross-platform dynamic-library API. Compiled artifacts are cached in
-the operating system's temporary directory, keyed by the generated IR, clang
+The JIT compiles generated LLVM IR to a platform-native shared library
+(`.dll`, `.dylib`, or `.so`) by running `clang`, then loads it through a
+cross-platform dynamic-library API. Compiled artifacts are cached in the
+operating system's temporary directory, keyed by the generated IR, clang
 version and target, and JIT optimization level.
 
 Remove the environment variable with `unset KRIA_BACKEND` on macOS/Linux or
 `Remove-Item Env:KRIA_BACKEND` in PowerShell to return to the default JIT.
 The backend setting applies to source-file execution; the interactive REPL
 always uses the Register VM, regardless of `KRIA_BACKEND`.
+
+### Platform requirements
+
+The REPL and the Register VM (`KRIA_BACKEND=register`) have no requirements
+beyond the `kria` binary. The default JIT backend calls `clang` at run time to
+compile and link native code, so the machine running `.krx` files needs a
+working C toolchain. Release packages and the Windows installer do **not**
+bundle this toolchain.
+
+| Platform | Needed to run with the JIT | Install |
+|----------|----------------------------|---------|
+| **Windows** | Clang (LLVM) on `PATH`, plus the MSVC linker, MSVC C runtime libraries, and Windows SDK | [LLVM for Windows](https://github.com/llvm/llvm-project/releases) (tick *Add LLVM to the system PATH*) and [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **Desktop development with C++** workload (MSVC v14x + Windows SDK) |
+| **Linux** | `clang`, a system linker (`ld` from binutils), and C runtime/development files (glibc and libgcc) | Debian/Ubuntu: `sudo apt install clang` · Fedora: `sudo dnf install clang` · Arch: `sudo pacman -S clang` |
+| **macOS** | Xcode Command Line Tools (provide `clang`, the linker, and the macOS SDK) | `xcode-select --install` |
+
+Notes:
+
+- **Windows:** Clang uses the MSVC toolchain to link the generated DLL. It
+  finds Build Tools automatically, so a *Developer Command Prompt* is not
+  required. The `kria.exe` binary itself also needs the Microsoft Visual C++
+  Redistributable (`VCRUNTIME140.dll`), which Build Tools installs.
+- **Linux:** package managers install binutils, glibc headers, and libgcc
+  together with `clang`. On minimal images, also install `build-essential`
+  (Debian/Ubuntu) or `gcc` (Fedora).
+- Check the setup with `clang --version`. If the toolchain is missing,
+  source files fail to run under the JIT with a `Failed to execute clang` or
+  link error; set `KRIA_BACKEND=register` to run them on the Register VM.
 
 **REPL:** persistent Register VM session, auto-print for expressions, multi-line blocks, `:help` / `:reset` / `:exit`.
 
@@ -138,7 +167,8 @@ Source (.krx) → Lexer → Parser → SSA/module → Register VM
   `KRIA_BACKEND=register` to use the Register VM
 - REPL uses the Register VM with persistent globals and functions
 - SSA register instructions, global/local/upvalue storage, call frames, and closures
-- LLVM JIT is experimental and requires Clang (from LLVM) on `PATH`
+- LLVM JIT is experimental and requires a native Clang toolchain at run time
+  (see [Platform requirements](#platform-requirements))
 - Hot-loop optimizations for global and local counters, plus specialized global string appends
 - Monomorphic object-property caches and shared closure environments
 - Implementation: [`src/`](src/) (`lexer`, `parser`, `register`, `vm`, `jit`,
@@ -204,6 +234,10 @@ export PATH="${PATH}:$HOME/.kria/bin"
 Other commands: `./release/build.sh` (build only), `./release/build.sh package` (tarball in `release/`).
 
 **Windows** — `cargo build --release`, then NSIS via `release/kria-setup.nsi`.
+
+Installed binaries need the toolchain from
+[Platform requirements](#platform-requirements) to run source files with the
+default JIT; without it, set `KRIA_BACKEND=register`.
 
 ---
 
